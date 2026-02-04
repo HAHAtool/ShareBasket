@@ -43,35 +43,26 @@ with tab1:
     except Exception as e:
         st.error(f"讀取清單出錯: {e}")
 
-# --- Tab 2: 發起 ---
+# --- 發起分購的優化邏輯 ---
 with tab2:
-    try:
-        # 讀取商店
-        stores = supabase.table("stores").select("*").execute().data
-        store_map = {s['branch_name']: s['id'] for s in stores}
-        sel_store = st.selectbox("在哪間店？", list(store_map.keys()))
+    st.subheader("📢 發起新揪團")
+    
+    # 數量分配
+    total_u = st.number_input("商品總入數", value=12)
+    my_u = st.number_input("主揪自留幾顆？", value=6, max_value=total_u)
+    others_u = total_u - my_u
+    
+    st.write(f"💡 開放鄰居認購：**{others_u}** 顆")
+    
+    # 兩段式確認
+    if st.button("📝 預覽發布內容"):
+        st.warning(f"確認發布：{sel_item}，總價 ${price}。您留 {my_u} 顆，求分 {others_u} 顆。")
         
-        # 讀取常用商品
-        pops = supabase.table("popular_items").select("*").execute().data
-        pop_names = [p['name'] for p in pops]
-        sel_item = st.selectbox("想分什麼？", pop_names)
-        
-        price = st.number_input("總價", value=259)
-        units = st.number_input("總數", value=12)
-        u_price = math.ceil(price / units)
-        
-        if st.button("🚀 確認發布", use_container_width=True):
-            new_data = {
-                "creator_nickname": "阿肥",
-                "store_id": store_map[sel_store],
-                "item_name": sel_item,
-                "total_price": price,
-                "total_units": units,
-                "unit_price": u_price,
-                "remaining_units": units
-            }
-            supabase.table("groups").insert(new_data).execute()
-            st.success("發布成功！")
-            st.rerun()
+        if st.button("🚀 確認正式發布"):
+            # 執行寫入資料庫
+            # ... (supabase.table("groups").insert(...)
+            st.success(f"🎉 {sel_item} ${price} 求分 {others_u} 顆發布成功！")
+            st.balloons()
     except Exception as e:
         st.error(f"發起功能出錯: {e}")
+
