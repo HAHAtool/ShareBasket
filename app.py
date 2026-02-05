@@ -4,7 +4,7 @@ import os
 import math
 from dotenv import load_dotenv
 
-# 1. 初始化與環境設定
+# 1. 初始化
 load_dotenv()
 url = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
 key = st.secrets.get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
@@ -12,25 +12,37 @@ supabase: Client = create_client(url, key)
 
 st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
 
-# --- 2. 處理 Google 登入邏輯 ---
-def get_user():
-    """檢查目前是否有登入使用者"""
+# --- 2. 核心修正：強制處理網址列的 OAuth 回傳 ---
+# 這是為了解決網址出現 ?code= 但沒登入的問題
+if "code" in st.query_params:
+    # 只要網址有 code，就代表 Google 剛跳轉回來
+    # 這裡什麼都不用做，只要確保執行過一次 supabase 的任何 auth 指令
+    # 它會自動去抓網址列的參數來建立連線
     try:
-        # 優先檢查 Session，這是 OAuth 回傳最穩定的讀取方式
-        session_res = supabase.auth.get_session()
-        if session_res and session_res.session:
-            return session_res.session.user
-        
+        supabase.auth.get_user()
+        # 成功拿到資料後，立刻清除網址參數並重整，讓網址變乾淨
+        st.query_params.clear()
+        st.rerun()
+    except Exception as e:
+        st.error(f"登入交換失敗：{e}")
+
+def get_user():
+    """獲取目前的登入狀態"""
+    try:
+        # 先試著拿 Session，這最準
+        res = supabase.auth.get_session()
+        if res and res.session:
+            return res.session.user
+        # 如果沒有 session，再試一次 get_user
         user_res = supabase.auth.get_user()
         return user_res.user if user_res else None
-    except Exception:
+    except:
         return None
 
 def login_with_google():
     """發起 Google OAuth 登入"""
-    # 確保此網址與 Supabase Site URL 完全一致
+    # 這裡的網址必須跟 Supabase Site URL 完完全全一致 (注意斜線)
     target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app"
-    
     try:
         auth_res = supabase.auth.sign_in_with_oauth({
             "provider": "google",
@@ -38,56 +50,35 @@ def login_with_google():
                 "redirect_to": target_url
             }
         })
-        return auth_res.url if auth_res else None
+        return auth_res.url
     except Exception as e:
-        st.error(f"❌ 登入初始化失敗: {str(e)}")
+        st.error(f"OAuth 初始化失敗: {e}")
         return None
 
-# --- 3. 關鍵修正：處理 OAuth 跳轉回來的代碼 ---
-# 當網址出現 ?code=... 時，強制觸發一次狀態更新
-if "code" in st.query_params:
-    temp_user = get_user()
-    if temp_user:
-        # 登入成功，清空網址參數並重整頁面
-        st.query_params.clear()
-        st.rerun()
-
-# 初始化 Session State
-if "confirm_publish" not in st.session_state:
-    st.session_state.confirm_publish = False
-
+# 取得目前使用者
 user = get_user()
 
-# --- 側邊欄：使用者資訊 ---
+# --- 側邊欄 ---
 with st.sidebar:
     st.title("👤 會員中心")
     if user:
         nickname = user.email.split('@')[0]
-        st.success(f"✅ 登入成功")
-        st.write(f"你好，{nickname}！")
+        st.success("✅ 已登入")
+        st.write(f"你好，{nickname}")
         if st.button("登出"):
             supabase.auth.sign_out()
             st.rerun()
     else:
-        st.warning("請先登入以使用完整功能")
+        st.warning("尚未登入")
         auth_url = login_with_google()
         if auth_url:
+            # 使用 target="_top" 是為了讓它在同一個分頁跳轉，這對 Session 寫入最穩定
             st.markdown(f'''
-                <a href="{auth_url}" target="_blank" style="text-decoration: none;">
-                    <div style="
-                        background-color: #4285F4; 
-                        color: white; 
-                        padding: 12px; 
-                        border-radius: 5px; 
-                        text-align: center;
-                        font-weight: bold;
-                        cursor: pointer;">
-                        🚀 點擊前往 Google 登入
+                <a href="{auth_url}" target="_top" style="text-decoration: none;">
+                    <div style="background-color: #4285F4; color: white; padding: 12px; border-radius: 5px; text-align: center; font-weight: bold; cursor: pointer;">
+                        使用 Google 一鍵登入
                     </div>
                 </a>
-                <p style="font-size: 12px; color: gray; text-align: center; margin-top: 10px;">
-                    (登入完成後請關閉分頁並重新整理本頁)
-                </p>
             ''', unsafe_allow_html=True)
 
 # --- 主畫面標題 ---
