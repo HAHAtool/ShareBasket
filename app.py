@@ -7,111 +7,93 @@ import hashlib
 import secrets
 import base64
 
-# --- 1. 初始化 ---
+# --- 1. 基礎設定 ---
 st.set_page_config(page_title="分食趣", page_icon="🛒")
 
-def get_supabase():
-    if "supabase" not in st.session_state:
-        st.session_state.supabase = create_client(
-            st.secrets["SUPABASE_URL"], 
-            st.secrets["SUPABASE_KEY"]
-        )
-    return st.session_state.supabase
+# 獲取正確的網址（移除結尾斜線以防萬一）
+base_url = st.secrets["REDIRECT_URI"].rstrip("/")
 
-supabase = get_supabase()
+# 確保 Client 是獨立的且存儲在 session 中
+if "supabase" not in st.session_state:
+    st.session_state.supabase = create_client(
+        st.secrets["SUPABASE_URL"], 
+        st.secrets["SUPABASE_KEY"]
+    )
 
-# --- 2. 工具函式 ---
-def generate_pkce_pair():
-    verifier = secrets.token_urlsafe(64)
-    sha256 = hashlib.sha256(verifier.encode('utf-8')).digest()
-    challenge = base64.urlsafe_b64encode(sha256).decode('utf-8').replace('=', '')
-    return verifier, challenge
+supabase: Client = st.session_state.supabase
 
-# --- 3. 處理 OAuth 回傳 (修正版) ---
-params = st.query_params
-if "code" in params:
-    auth_code = params["code"]
-    # 嘗試從 session 拿 verifier
-    code_verifier = st.session_state.get("pkce_verifier")
-    
-    if auth_code:
-        if code_verifier:
-            try:
-                # 執行交換
-                supabase.auth.exchange_code_for_session({
-                    "auth_code": auth_code,
-                    "code_verifier": code_verifier
-                })
-                # 成功後立刻清空參數，但不急著刪除 verifier，交給 rerun 處理
-                st.query_params.clear()
-                st.rerun()
-            except Exception as e:
-                st.error(f"❌ 憑證交換失敗: {e}")
-        else:
-            # 如果真的沒找到 verifier，先嘗試看能不能直接拿到 session (萬一已經登入了)
-            try:
-                session = supabase.auth.get_session()
-                if session and session.user:
-                    st.query_params.clear()
-                    st.rerun()
-                else:
-                    st.error("❌ 遺失驗證密鑰 (Verifier)，請回首頁重新登入。")
-            except:
-                st.error("❌ 發生未知錯誤，請重整頁面。")
+# --- 2. 核心：處理回傳代碼 (Code Exchange) ---
+# 我們不再手動處理 PKCE，交給 SDK 自動處理，但要解決 Session 遺失問題
+q_params = st.query_params
 
-# --- 4. 取得目前使用者狀態 ---
+if "code" in q_params:
+    try:
+        # 嘗試直接交換
+        # 注意：如果這裡噴 403，代表 Redirect URI 或是 PKCE 狀態不匹配
+        auth_code = q_params["code"]
+        res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
+        
+        if res.user:
+            st.session_state.user = res.user
+            st.query_params.clear()
+            st.rerun()
+    except Exception as e:
+        # 如果失敗了，顯示詳細錯誤幫助診斷
+        st.error(f"❌ 登入交換失敗。這通常是網址不匹配引起。")
+        st.write(f"系統訊息: {e}")
+        # 加入清除按鈕，防止卡在 403 畫面
+        if st.button("清除錯誤並重試"):
+            st.query_params.clear()
+            st.rerun()
+
+# --- 3. 獲取目前狀態 ---
 user = None
 try:
-    # 這是最準確的：直接從 Supabase 客戶端檢查是否有有效的 Session
-    session_res = supabase.auth.get_session()
-    if session_res and session_res.user:
-        user = session_res.user
+    session = supabase.auth.get_session()
+    if session and session.user:
+        user = session.user
 except:
     user = None
 
-# --- 5. UI 介面 ---
+# --- 4. UI 介面 ---
 st.title("🛒 分食趣")
+
+# 調試資訊：如果一直 403，請核對這裡顯示的網址與你的 secrets 是否完全一致
+with st.expander("🛠️ 開發者調試資訊 (若登入成功請忽略)"):
+    st.write(f"當前設定的 Redirect URI: `{base_url}`")
+    st.write(f"目前網址參數: `{st.query_params.to_dict()}`")
 
 with st.sidebar:
     st.header("👤 會員中心")
     if user:
-        st.success(f"✅ 已登入: {user.email}")
-        if st.button("登出系統"):
+        st.success(f"已登入: {user.email}")
+        if st.button("登出"):
             supabase.auth.sign_out()
             st.session_state.clear()
             st.rerun()
     else:
-        # 強制使用 target="_self" 確保在同一分頁跳轉，避免 session 遺失
-        v, c = generate_pkce_pair()
-        st.session_state["pkce_verifier"] = v
-        
-        res = supabase.auth.sign_in_with_oauth({
+        st.info("請登入以繼續")
+        # 發起登入
+        # 我們讓 SDK 自己管理 PKCE，但為了避免 403，我們明確指定 redirect_to
+        auth_res = supabase.auth.sign_in_with_oauth({
             "provider": "google",
             "options": {
-                "redirect_to": st.secrets["REDIRECT_URI"],
-                "query_params": {"prompt": "select_account"},
-                "code_challenge": c,
-                "code_challenge_method": "s256"
+                "redirect_to": base_url,
+                "query_params": {"prompt": "select_account"}
             }
         })
         
-        if res.url:
-            # 使用 HTML 確保不會開啟新視窗
-            st.markdown(f'''
-                <a href="{res.url}" target="_self" style="text-decoration:none;">
-                    <button style="width:100%; padding:10px; background-color:#4285F4; color:white; border:none; border-radius:5px; cursor:pointer;">
-                        🚀 使用 Google 一鍵登入
-                    </button>
-                </a>
-            ''', unsafe_allow_html=True)
+        if auth_res.url:
+            # 使用 Streamlit 官方最推薦的按鈕方式
+            st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
 
-# 主畫面測試內容
+# --- 5. 主畫面 ---
 if user:
     st.balloons()
-    st.write(f"### 歡迎回來，{user.email.split('@')[0]}！")
-    st.write("這是在 Supabase 驗證成功的畫面。")
+    st.write(f"### 歡迎，{user.email}")
+    st.info("登入成功！請告訴我接下來你要做的「數量試算」邏輯。")
 else:
-    st.info("請點擊左側登入按鈕開始使用。")
+    st.warning("請先完成側邊欄登入。")
 
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
