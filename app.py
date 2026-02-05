@@ -59,23 +59,29 @@ with st.sidebar:
             supabase.auth.sign_out()
             st.rerun()
     else:
-        st.warning("尚未登入")
+        st.warning("請先登入以使用完整功能")
         auth_url = login_with_google()
+        
         if auth_url:
-            # 關鍵修改：使用 target="_top" 強制跳出 Streamlit 的框架
+            # 方案：建立一個明顯的按鈕連結
+            # 使用 target="_blank" 強制在新分頁開啟，這是目前最穩定的做法
             st.markdown(f'''
-                <a href="{auth_url}" target="_top" style="text-decoration: none;">
+                <a href="{auth_url}" target="_blank" style="text-decoration: none;">
                     <div style="
                         background-color: #4285F4; 
                         color: white; 
-                        padding: 10px; 
+                        padding: 12px; 
                         border-radius: 5px; 
                         text-align: center;
                         font-weight: bold;
+                        box-shadow: 0px 2px 5px rgba(0,0,0,0.2);
                         cursor: pointer;">
-                        使用 Google 一鍵登入
+                        🚀 點擊前往 Google 登入
                     </div>
                 </a>
+                <p style="font-size: 12px; color: gray; text-align: center; margin-top: 10px;">
+                    (登入成功後請關閉分頁並重新整理本頁)
+                </p>
             ''', unsafe_allow_html=True)
 
 # --- 主畫面標題 ---
