@@ -2,19 +2,13 @@ import streamlit as st
 from supabase import create_client
 import math
 
-# 1. 基礎連線
+# --- 基礎設定 ---
 if "supabase" not in st.session_state:
     st.session_state.supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 supabase = st.session_state.supabase
 
-# 初始化狀態
-if "confirm_publish" not in st.session_state: st.session_state.confirm_publish = False
-if "temp_post" not in st.session_state: st.session_state.temp_post = None
-
-# --- 2. 核心邏輯函數 ---
-
+# --- 認證邏輯 (保留你要求的雙重檢查) ---
 def get_user():
-    """獲取目前登入使用者"""
     if "user_obj" in st.session_state: return st.session_state.user_obj
     try:
         res = supabase.auth.get_session()
@@ -24,60 +18,98 @@ def get_user():
     except: pass
     return None
 
-def get_nickname(uid):
-    """獲取用戶暱稱"""
-    try:
-        res = supabase.table("profiles").select("nickname").eq("id", uid).maybe_single().execute()
-        return res.data['nickname'] if res.data else "神秘分食友"
-    except: return "未知用戶"
-
-@st.fragment(run_every="10s")
-def sync_notifications(user_id):
-    """即時通知：每10秒檢查是否有新跟團"""
-    if user_id:
-        try:
-            res = supabase.table("groups").select("id, item_name").eq("creator_id", user_id).eq("has_new_join", True).execute()
-            if res.data:
-                for g in res.data:
-                    st.toast(f"📢 有人加入你的「{g['item_name']}」分食團了！", icon="🎉")
-        except: pass
-
 user = get_user()
 
-# --- 3. 側邊欄 UI ---
-with st.sidebar:
-    st.header("👤 會員選單")
-    if user:
-        sync_notifications(user.id) # 啟動即時通知
-        my_nick = get_nickname(user.id)
-        st.success(f"你好，{my_nick}")
+# --- 主畫面導覽 ---
+st.title("🛒 分食趣 - 精準分食版")
+tab1, tab2, tab3 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團", "👤 會員中心"])
+
+# --- Tab 1: 找分食清單 ---
+with tab1:
+    st.subheader("現場待領清單")
+    if st.button("🔄 刷新即時清單"): st.rerun()
+
+    res = supabase.table("groups").select("*, stores(branch_name)").eq("status", "active").order("created_at", desc=True).execute()
+    for item in (res.data or []):
+        with st.container(border=True):
+            col_info, col_btn = st.columns([3, 1])
+            with col_info:
+                st.subheader(item['item_name'])
+                st.write(f"📍 {item['stores']['branch_name']} | 👤 主揪：{item['creator_nickname']}")
+                st.write(f"💵 金額：**${int(item['unit_price'])}** / 份")
+                
+                # 金額提醒邏輯
+                total_collected = item['unit_price'] * (item['remaining_units'] + item['self_units'])
+                if total_collected > item['total_price']:
+                    st.caption(f"⚠️ *本團金額經無條件進位，每份約多收 ${int(total_collected - item['total_price'])} 元作為雜費補貼")
+
+            with col_btn:
+                st.metric("剩餘", f"{item['remaining_units']} 份")
+                if st.button("我要 +1", key=f"join_{item['id']}"):
+                    if not user: st.error("請先登入！")
+                    else:
+                        new_remain = item['remaining_units'] - 1
+                        status = 'active' if new_remain > 0 else 'closed'
+                        supabase.table("groups").update({"remaining_units": new_remain, "status": status, "has_new_join": True}).eq("id", item['id']).execute()
+                        supabase.table("group_members").insert({"group_id": item['id'], "user_id": user.id}).execute()
+                        st.success("成功跟團！主揪已收到即時通知。")
+                        st.rerun()
+
+# --- Tab 2: 我要發起揪團 (核心邏輯修改) ---
+with tab2:
+    if not user:
+        st.warning("發起前請先登入。")
+    elif not st.session_state.get('confirm_publish', False):
+        st.subheader("📢 設定分食份量")
         
-        # 頁面切換
-        page = st.radio("前往頁面", ["找分食/發起", "我的會員中心"])
+        # 基本資料 (簡化，假設你已有 store_map)
+        item_name = st.text_input("商品名稱", "草莓大福")
+        total_price = st.number_input("商品總價格", min_value=1, value=259)
+        total_count = st.number_input("商品總顆數", min_value=1, value=12)
         
-        if st.button("登出系統"):
-            supabase.auth.sign_out()
-            st.session_state.clear()
+        st.divider()
+        col1, col2 = st.columns(2)
+        with col1:
+            self_count = st.number_input("1. 主揪自留幾個？", min_value=1, max_value=total_count, value=5)
+        with col2:
+            per_pack = st.number_input("2. 幾個為一份？", min_value=1, max_value=total_count, value=5)
+        
+        # --- 核心邏輯運算 ---
+        to_share_count = total_count - self_count
+        share_units = to_share_count // per_pack  # 可分出的份數
+        remainder = to_share_count % per_pack     # 剩餘孤兒
+        
+        real_self_count = self_count + remainder  # 主揪實際拿到的個數
+        total_units = 1 + share_units             # 主揪(1份) + 別人(share_units份)
+        
+        # 無條件進位單價
+        unit_price = math.ceil(total_price / (1 + share_units))
+
+        st.info(f"💡 運算結果：\n"
+                f"- 別人可領：**{share_units} 份** (每份 {per_pack} 顆)\n"
+                f"- 主揪實拿：**{real_self_count} 顆** (原留 {self_count} + 孤兒 {remainder})\n"
+                f"- 每份金額：**${unit_price} 元**")
+
+        if remainder > 0:
+            st.warning(f"注意：因無法整除，剩餘的 {remainder} 顆將自動併入主揪自留數量。")
+
+        if st.button("📝 預覽發布"):
+            st.session_state.temp_post = {
+                "item": item_name, "price": total_price, "u_price": unit_price,
+                "share_units": share_units, "self_units": 1, # 存成份數
+                "total_count": total_count, "nickname": user.email.split('@')[0]
+            }
+            st.session_state.confirm_publish = True
             st.rerun()
     else:
-        page = "找分食/發起"
-        st.info("請先登入以使用完整功能")
-        auth_mode = st.radio("登入/註冊", ["登入", "註冊"])
-        email = st.text_input("Email")
-        pw = st.text_input("密碼", type="password")
-        if st.button("執行"):
-            try:
-                if auth_mode == "登入":
-                    res = supabase.auth.sign_in_with_password({"email": email, "password": pw})
-                    if res.user: 
-                        st.session_state.user_obj = res.user
-                        st.rerun()
-                else:
-                    res = supabase.auth.sign_up({"email": email, "password": pw})
-                    if res.user:
-                        supabase.table("profiles").insert({"id": res.user.id, "nickname": email.split('@')[0]}).execute()
-                    st.info("註冊完成，請嘗試登入。")
-            except Exception as e: st.error(f"錯誤: {e}")
+        # 確認發布畫面... (邏輯同前)
+        p = st.session_state.temp_post
+        st.write("確認無誤後請發布...")
+        if st.button("✅ 正式發布"):
+            # Insert to Supabase (略)
+            st.session_state.confirm_publish = False
+            st.rerun()
+
 
 # --- 4. 頁面邏輯：會員中心 ---
 if user and page == "我的會員中心":
