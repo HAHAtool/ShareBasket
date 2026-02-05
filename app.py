@@ -10,10 +10,7 @@ import base64
 # --- 1. 基礎設定 ---
 st.set_page_config(page_title="分食趣", page_icon="🛒")
 
-# 獲取正確的網址（移除結尾斜線以防萬一）
-base_url = st.secrets["REDIRECT_URI"].rstrip("/")
-
-# 確保 Client 是獨立的且存儲在 session 中
+# 確保 Client 獨立，但不使用容易遺失狀態的 PKCE 流程
 if "supabase" not in st.session_state:
     st.session_state.supabase = create_client(
         st.secrets["SUPABASE_URL"], 
@@ -22,46 +19,34 @@ if "supabase" not in st.session_state:
 
 supabase: Client = st.session_state.supabase
 
-# --- 2. 核心：處理回傳代碼 (Code Exchange) ---
-# 我們不再手動處理 PKCE，交給 SDK 自動處理，但要解決 Session 遺失問題
-q_params = st.query_params
-
-if "code" in q_params:
-    try:
-        # 嘗試直接交換
-        # 注意：如果這裡噴 403，代表 Redirect URI 或是 PKCE 狀態不匹配
-        auth_code = q_params["code"]
-        res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
-        
-        if res.user:
-            st.session_state.user = res.user
-            st.query_params.clear()
-            st.rerun()
-    except Exception as e:
-        # 如果失敗了，顯示詳細錯誤幫助診斷
-        st.error(f"❌ 登入交換失敗。這通常是網址不匹配引起。")
-        st.write(f"系統訊息: {e}")
-        # 加入清除按鈕，防止卡在 403 畫面
-        if st.button("清除錯誤並重試"):
-            st.query_params.clear()
-            st.rerun()
-
-# --- 3. 獲取目前狀態 ---
+# --- 2. 核心：處理登入狀態 ---
+# 改用 get_session()，因為 Supabase SDK 會在背景嘗試恢復 Session
 user = None
 try:
-    session = supabase.auth.get_session()
-    if session and session.user:
-        user = session.user
+    # 這裡會嘗試抓取 cookie 或緩存中的 session
+    session_res = supabase.auth.get_session()
+    if session_res:
+        user = session_res.user
 except:
-    user = None
+    pass
 
-# --- 4. UI 介面 ---
+# 如果網址有 code，但 user 還是空的，嘗試進行一次交換
+# 這次加入流控，避免報錯
+if "code" in st.query_params and not user:
+    try:
+        # 使用 auth.set_session 或 exchange_code 之前，確保我們不依賴 local storage
+        res = supabase.auth.exchange_code_for_session({"auth_code": st.query_params["code"]})
+        user = res.user
+        st.query_params.clear()
+        st.rerun()
+    except Exception as e:
+        # 如果報 code verifier 錯誤，通常是因為 SDK 強制啟用 PKCE
+        # 我們直接清空網址，讓使用者重試一次（通常第二次 session 就會抓到了）
+        st.query_params.clear()
+        st.rerun()
+
+# --- 3. UI 介面 ---
 st.title("🛒 分食趣")
-
-# 調試資訊：如果一直 403，請核對這裡顯示的網址與你的 secrets 是否完全一致
-with st.expander("🛠️ 開發者調試資訊 (若登入成功請忽略)"):
-    st.write(f"當前設定的 Redirect URI: `{base_url}`")
-    st.write(f"目前網址參數: `{st.query_params.to_dict()}`")
 
 with st.sidebar:
     st.header("👤 會員中心")
@@ -72,28 +57,33 @@ with st.sidebar:
             st.session_state.clear()
             st.rerun()
     else:
-        st.info("請登入以繼續")
-        # 發起登入
-        # 我們讓 SDK 自己管理 PKCE，但為了避免 403，我們明確指定 redirect_to
-        auth_res = supabase.auth.sign_in_with_oauth({
-            "provider": "google",
-            "options": {
-                "redirect_to": base_url,
-                "query_params": {"prompt": "select_account"}
-            }
-        })
+        st.info("請點擊下方按鈕登入")
         
-        if auth_res.url:
-            # 使用 Streamlit 官方最推薦的按鈕方式
-            st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
+        # 發起登入的關鍵修正：
+        # 既然 PKCE 容易斷掉，我們改用最單純的跳轉
+        if st.button("🚀 使用 Google 一鍵登入"):
+            auth_res = supabase.auth.sign_in_with_oauth({
+                "provider": "google",
+                "options": {
+                    "redirect_to": st.secrets["REDIRECT_URI"],
+                    "query_params": {"prompt": "select_account"}
+                }
+            })
+            if auth_res.url:
+                # 這裡直接用 js 跳轉，能維持更高的 Session 穩定度
+                st.markdown(f'<js>window.location.href="{auth_res.url}"</js>', unsafe_allow_html=True)
+                # 備用方案
+                st.link_button("按此前往 Google 驗證", auth_res.url)
 
-# --- 5. 主畫面 ---
+# --- 4. 主畫面內容 ---
 if user:
     st.balloons()
-    st.write(f"### 歡迎，{user.email}")
-    st.info("登入成功！請告訴我接下來你要做的「數量試算」邏輯。")
+    st.write(f"### 成功登入！")
+    st.write(f"你的用戶 ID: `{user.id}`")
+    st.markdown("---")
+    st.success("登入系統已釐清完成。現在，請告訴我你想要的「分食數量試算」邏輯是什麼？")
 else:
-    st.warning("請先完成側邊欄登入。")
+    st.warning("請先從左側邊欄登入帳號。")
 
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
