@@ -6,89 +6,102 @@ from dotenv import load_dotenv
 import hashlib
 import secrets
 import base64
-import requests
 
-# 初始化 Client
-supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+# --- 1. 初始化 Supabase ---
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
 
-# --- 核心安全邏輯：處理從 Google 跳轉回來的 Code ---
-def handle_callback():
-    params = st.query_params
-    if "code" in params:
-        # 從 Session 安全取得當初發出的 verifier
-        # 這是符合 PKCE 標準的做法，確保 Code 只能由發起者交換
-        code_verifier = st.session_state.get("code_verifier")
-        
-        if code_verifier:
-            try:
-                # 官方建議的交換方式
-                supabase.auth.exchange_code_for_session({
-                    "auth_code": params["code"],
-                    "code_verifier": code_verifier
-                })
-                # 清理參數與臨時驗證碼
+if "supabase" not in st.session_state:
+    st.session_state.supabase = create_client(url, key)
+supabase = st.session_state.supabase
+
+# --- 2. PKCE 標準工具函式 ---
+def generate_pkce():
+    """生成符合 RFC 7636 規範的 PKCE 密鑰對"""
+    # Verifier: 隨機安全字串
+    verifier = secrets.token_urlsafe(64)
+    # Challenge: SHA256 雜湊後的 Base64 編碼
+    sha256 = hashlib.sha256(verifier.encode('utf-8')).digest()
+    challenge = base64.urlsafe_b64encode(sha256).decode('utf-8').replace('=', '')
+    return verifier, challenge
+
+# --- 3. 處理從 Google 跳轉回來的 Callback ---
+q_params = st.query_params
+if "code" in q_params:
+    auth_code = q_params["code"]
+    # 從 session_state 找回跳轉前存下來的 verifier
+    stored_verifier = st.session_state.get("code_verifier")
+    
+    if auth_code and stored_verifier:
+        try:
+            # 依照官方標準交換 Session
+            res = supabase.auth.exchange_code_for_session({
+                "auth_code": auth_code, 
+                "code_verifier": stored_verifier
+            })
+            if res.user:
+                st.session_state.user = res.user
+                # 成功後清理
                 st.query_params.clear()
                 if "code_verifier" in st.session_state:
                     del st.session_state["code_verifier"]
                 st.rerun()
-            except Exception as e:
-                st.error(f"安全驗證失敗: {e}")
-        else:
-            # 如果遺失了 verifier，嘗試靜默獲取（應對部分 SDK 自動處理情況）
-            session = supabase.auth.get_session()
-            if session:
-                st.query_params.clear()
-                st.rerun()
+        except Exception as e:
+            st.error(f"❌ 安全驗證交換失敗: {e}")
+            st.query_params.clear()
 
-# --- 執行回傳攔截 ---
-handle_callback()
+# --- 4. 取得使用者狀態 ---
+# 優先檢查 SDK 的 session，若無則看我們手動存的
+user = None
+try:
+    session_data = supabase.auth.get_session()
+    user = session_data.user if session_data else st.session_state.get("user")
+except:
+    user = st.session_state.get("user")
 
-# 獲取目前使用者
-def get_user():
-    try:
-        res = supabase.auth.get_session()
-        return res.user if res else None
-    except:
-        return None
-
-user = get_user()
-
-# --- UI 介面 ---
+# --- 5. UI 介面 ---
 st.title("🛒 分食趣")
 
 with st.sidebar:
+    st.header("👤 會員中心")
     if user:
-        st.success(f"已安全登入: {user.email}")
-        if st.button("登出"):
+        st.success(f"✅ 已安全登入: {user.email}")
+        if st.button("登出系統"):
             supabase.auth.sign_out()
             st.session_state.clear()
             st.rerun()
     else:
+        st.info("請使用 Google 帳號登入")
+        
+        # 發起登入流程
         if st.button("🚀 使用 Google 一鍵登入"):
-            # 發起官方 OAuth 流程
-            # flow_type 預設即為 pkce
-            resp = supabase.auth.sign_in_with_oauth({
+            # A. 生成 PKCE 密鑰
+            v, c = generate_pkce()
+            # B. 將 verifier 存入 session，這樣跳轉回來才找得到
+            st.session_state["code_verifier"] = v
+            
+            # C. 請求登入連結，並傳入 challenge
+            res = supabase.auth.sign_in_with_oauth({
                 "provider": "google",
                 "options": {
                     "redirect_to": st.secrets["REDIRECT_URI"],
-                    "query_params": {"prompt": "select_account"}
+                    "query_params": {"prompt": "select_account"},
+                    "code_challenge": c,
+                    "code_challenge_method": "s256"
                 }
             })
             
-            # 重要：SDK 在發起時會自動產生一個 verifier，我們必須把它攔截並存下來
-            # 否則跳轉回來後，Python 會忘記它
-            if resp.url:
-                # 獲取 SDK 自動產生的 verifier
-                # 注意：這取決於 supabase-py 的版本，通常在 client.auth 內部
-                # 若自動獲取失敗，我們可以用 st.session_state 輔助
-                st.session_state["code_verifier"] = supabase.auth._client.get_code_verifier()
-                
-                # 安全跳轉
-                st.link_button("前往 Google 驗證", resp.url)
+            if res.url:
+                # D. 提供安全連結
+                st.link_button("確認前往 Google 驗證", res.url)
 
+# --- 6. 成功後的畫面 ---
 if user:
-    st.write("### 認證成功")
-    st.info("此 Session 已通過官方 PKCE 安全驗證。")
+    st.balloons()
+    st.write(f"### 認證成功！歡迎回來，{user.email}")
+else:
+    st.write("---")
+    st.info("👋 歡迎！請先完成登入。")
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
 tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
