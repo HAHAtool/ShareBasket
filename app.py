@@ -12,74 +12,70 @@ supabase: Client = create_client(url, key)
 
 st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
 
-# --- 2. 核心修正：強制處理網址列的 OAuth 回傳 ---
-# 這是為了解決網址出現 ?code= 但沒登入的問題
-if "code" in st.query_params:
-    # 只要網址有 code，就代表 Google 剛跳轉回來
-    # 這裡什麼都不用做，只要確保執行過一次 supabase 的任何 auth 指令
-    # 它會自動去抓網址列的參數來建立連線
-    try:
-        supabase.auth.get_user()
-        # 成功拿到資料後，立刻清除網址參數並重整，讓網址變乾淨
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"登入交換失敗：{e}")
-
+# --- 2. 處理 Google 登入邏輯 ---
 def get_user():
-    """獲取目前的登入狀態"""
+    """獲取目前登入的使用者物件"""
     try:
-        # 先試著拿 Session，這最準
-        res = supabase.auth.get_session()
-        if res and res.session:
-            return res.session.user
-        # 如果沒有 session，再試一次 get_user
-        user_res = supabase.auth.get_user()
-        return user_res.user if user_res else None
+        # 在 Streamlit 中，這行會檢查瀏覽器傳回的 Cookie
+        res = supabase.auth.get_user()
+        if res and res.user:
+            return res.user
+        return None
     except:
         return None
 
-def login_with_google():
-    """發起 Google OAuth 登入"""
-    # 這裡的網址必須跟 Supabase Site URL 完完全全一致 (注意斜線)
-    target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app"
-    try:
-        auth_res = supabase.auth.sign_in_with_oauth({
-            "provider": "google",
-            "options": {
-                "redirect_to": target_url
-            }
-        })
-        return auth_res.url
-    except Exception as e:
-        st.error(f"OAuth 初始化失敗: {e}")
-        return None
+# --- 3. 核心修正：強制偵測網址列的 code ---
+# 如果網址列有 code，代表 Google 剛跳回。我們顯示一個手動按鈕來確保 Session 建立
+if "code" in st.query_params:
+    st.info("正在完成登入驗證...")
+    # 執行一次 get_user 嘗試建立連線
+    u = get_user()
+    if u:
+        st.success("身分驗證成功！")
+        if st.button("點擊進入系統"):
+            st.query_params.clear() # 清除網址列的 code
+            st.rerun()
+    else:
+        # 如果 get_user 沒抓到，可能是延遲，提供手動刷新的按鈕
+        st.warning("驗證中，如果畫面沒動請點擊下方按鈕")
+        if st.button("重新整理頁面以登入"):
+            st.rerun()
 
-# 取得目前使用者
 user = get_user()
 
-# --- 側邊欄 ---
+# --- 側邊欄：使用者資訊 ---
 with st.sidebar:
     st.title("👤 會員中心")
     if user:
         nickname = user.email.split('@')[0]
-        st.success("✅ 已登入")
-        st.write(f"你好，{nickname}")
+        st.success(f"✅ 已登入：{nickname}")
         if st.button("登出"):
             supabase.auth.sign_out()
             st.rerun()
     else:
         st.warning("尚未登入")
-        auth_url = login_with_google()
-        if auth_url:
-            # 使用 target="_top" 是為了讓它在同一個分頁跳轉，這對 Session 寫入最穩定
+        # 直接使用 Supabase 產生的 URL
+        target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app"
+        auth_res = supabase.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {"redirect_to": target_url}
+        })
+        
+        if auth_res and auth_res.url:
+            # 這是目前最穩定的寫法：在新視窗打開 Google，完成後關閉它回原視窗重新整理
             st.markdown(f'''
-                <a href="{auth_url}" target="_top" style="text-decoration: none;">
-                    <div style="background-color: #4285F4; color: white; padding: 12px; border-radius: 5px; text-align: center; font-weight: bold; cursor: pointer;">
-                        使用 Google 一鍵登入
-                    </div>
+                <a href="{auth_res.url}" target="_blank" style="text-decoration: none;">
+                    <button style="width:100%; background-color:#4285F4; color:white; border:none; padding:12px; border-radius:5px; cursor:pointer; font-weight:bold;">
+                        🚀 點擊 Google 一鍵登入
+                    </button>
                 </a>
+                <p style="font-size:12px; color:gray; text-align:center; margin-top:5px;">
+                    (在新視窗選完帳號後，回到此頁點擊重新整理)
+                </p>
             ''', unsafe_allow_html=True)
+
+# --- 接下來是原本的主畫面 Tab1, Tab2 (維持不變) ---
+# ...
 
 # --- 主畫面標題 ---
 st.title("🛒 分食趣-現場媒合")
