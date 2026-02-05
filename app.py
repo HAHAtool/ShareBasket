@@ -8,72 +8,96 @@ import secrets
 import base64
 
 # 1. 基礎連線
-url = st.secrets["SUPABASE_URL"]
-key = st.secrets["SUPABASE_KEY"]
-
 if "supabase" not in st.session_state:
-    st.session_state.supabase = create_client(url, key)
+    st.session_state.supabase = create_client(
+        st.secrets["SUPABASE_URL"], 
+        st.secrets["SUPABASE_KEY"]
+    )
 supabase = st.session_state.supabase
 
-# 2. 【核心】手動強制獲取 Session
-# 當網址有 code 時，這段代碼會強行執行交換並把結果存入 Streamlit 的記憶體
-params = st.query_params
-if "code" in params and "user_obj" not in st.session_state:
-    try:
-        # 強制換票
-        auth_response = supabase.auth.exchange_code_for_session({"auth_code": params["code"]})
-        if auth_response.user:
-            # 這是關鍵：手動存入 st.session_state，這是不會被瀏覽器擋掉的
-            st.session_state.user_obj = auth_response.user
-            # 成功後立刻清空網址，防止重複刷新報錯
-            st.query_params.clear()
-            st.rerun()
-    except Exception as e:
-        st.error(f"登入交換失敗，請稍後再試。")
-        st.query_params.clear()
+# --- 2. 手動 PKCE 生成器 (符合 RFC 7636 標準) ---
+def get_pkce():
+    # 生成隨機 Verifier
+    verifier = secrets.token_urlsafe(64)
+    # 生成 Challenge
+    sha256 = hashlib.sha256(verifier.encode('utf-8')).digest()
+    challenge = base64.urlsafe_b64encode(sha256).decode('utf-8').replace('=', '')
+    return verifier, challenge
 
-# 3. 定義顯示邏輯
-# 優先看 session_state，如果沒有再看 SDK (SDK 通常在跳轉後會是空的)
+# --- 3. 處理 Callback ---
+params = st.query_params
+if "code" in params:
+    auth_code = params["code"]
+    # 關鍵：從 session_state 找回跳轉前的鑰匙
+    stored_verifier = st.session_state.get("my_verifier")
+    
+    if auth_code and stored_verifier:
+        try:
+            # 手動傳入 verifier 進行交換，這能解決 "code verifier should be non-empty"
+            res = supabase.auth.exchange_code_for_session({
+                "auth_code": auth_code,
+                "code_verifier": stored_verifier
+            })
+            if res.user:
+                st.session_state.user_obj = res.user
+                st.query_params.clear()
+                st.rerun()
+        except Exception as e:
+            st.error(f"❌ 交換失敗: {str(e)}")
+            # 如果失敗，顯示調試資訊
+            st.write(f"已嘗試使用 Verifier: `{stored_verifier[:10]}...`")
+    else:
+        if not stored_verifier:
+            st.error("❌ 系統遺失了驗證密鑰 (Verifier)，請重新點擊登入。")
+    
+    # 清理網址參數
+    if st.button("清除錯誤網址"):
+        st.query_params.clear()
+        st.rerun()
+
+# --- 4. 取得使用者 ---
 user = st.session_state.get("user_obj")
 
-# 4. UI 介面
+# --- 5. UI 介面 ---
 st.title("🛒 分食趣")
 
 with st.sidebar:
     st.header("👤 會員中心")
     if user:
-        st.success(f"✅ 歡迎，{user.email}")
-        if st.button("安全登出"):
-            supabase.auth.sign_out()
-            st.session_state.clear() # 清空所有狀態
+        st.success(f"✅ 已登入: {user.email}")
+        if st.button("登出"):
+            st.session_state.clear()
             st.rerun()
     else:
-        st.info("請點擊下方按鈕進行 Google 登入")
-        
-        # 準備 Google 登入網址
-        # 確保你的 Supabase 中 "Skip nonce check" 是開啟的
-        try:
+        # 登入邏輯
+        v, c = get_pkce()
+        if st.button("🚀 使用 Google 一鍵登入"):
+            # 存入 session_state
+            st.session_state["my_verifier"] = v
+            
+            # 發起請求
             auth_res = supabase.auth.sign_in_with_oauth({
                 "provider": "google",
                 "options": {
                     "redirect_to": st.secrets["REDIRECT_URI"],
+                    "code_challenge": c,
+                    "code_challenge_method": "s256",
                     "query_params": {"prompt": "select_account"}
                 }
             })
             if auth_res.url:
-                st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
-        except Exception as e:
-            st.error(f"連線錯誤: {e}")
+                # 使用官方 link_button 跳轉
+                st.link_button("確認前往 Google", auth_res.url)
 
-# 5. 主功能畫面
+# --- 6. 業務邏輯展示區 ---
 if user:
     st.balloons()
+    st.success("Google 串接終於成功！")
     st.write("---")
-    st.subheader("🎉 登入成功！")
-    st.write("認證機制已穩定運行。請告訴我接下來的業務邏輯：")
-    st.info("你需要：1. 數量自動試算 2. 兩段式發布確認 嗎？")
+    st.subheader("💡 接下來的任務：數量自動試算")
+    st.write("既然登入通了，我們現在來做『分食計算機』吧？")
 else:
-    st.warning("請先由左側登入，即可開始使用分食媒合功能。")
+    st.info("請先完成登入，即可開始媒合。")
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
 tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
