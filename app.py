@@ -4,89 +4,83 @@ import os
 import math
 from dotenv import load_dotenv
 
-# 1. 初始化與環境設定
-load_dotenv()
-url = st.secrets.get("SUPABASE_URL")
-key = st.secrets.get("SUPABASE_KEY")
-supabase: Client = create_client(url, key)
+# --- 1. 初始化 Supabase 用戶端 ---
+@st.cache_resource
+def init_connection():
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
-st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
+supabase: Client = init_connection()
 
-# --- 2. 函式定義區 (確保在呼叫前定義) ---
-
-def get_user():
-    """獲取目前登入的使用者"""
-    try:
-        # 檢查當前的 Session
-        session_res = supabase.auth.get_session()
-        if session_res and session_res.session:
-            return session_res.session.user
-        
-        user_res = supabase.auth.get_user()
-        return user_res.user if user_res else None
-    except Exception:
-        return None
-
-def login_with_google():
-    """發起 Google OAuth 登入"""
-    target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app"
-    try:
-        auth_res = supabase.auth.sign_in_with_oauth({
-            "provider": "google",
-            "options": {"redirect_to": target_url}
-        })
-        return auth_res.url if auth_res else None
-    except Exception as e:
-        st.error(f"❌ 登入初始化失敗: {str(e)}")
-        return None
-
-# --- 3. 處理登入邏輯與 Session (修正版) ---
-
-# 初始化 session_state 中的 user
-if "user" not in st.session_state:
-    st.session_state.user = None
-
-# 關鍵：偵測網址中的 code 並換取 Session
-if "code" in st.query_params:
-    auth_code = st.query_params.get("code")
-    try:
-        # 使用 code 向 Supabase 換取正式的 Session
-        res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
-        st.session_state.user = res.user
-        # 清除網址上的 code，避免重複觸發，並重新整理頁面
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"登入驗證失敗: {str(e)}")
-
-# 定期檢查 Session 是否有效（例如頁面刷新時）
-if not st.session_state.user:
-    curr_user = get_user()
-    if curr_user:
-        st.session_state.user = curr_user
-
-user = st.session_state.user
-
-# --- 4. 側邊欄：使用者資訊 ---
-with st.sidebar:
-    st.title("👤 會員中心")
-    if user:
-        nickname = user.email.split('@')[0]
-        st.success(f"✅ 已登入：{nickname}")
-        if st.button("登出系統"):
-            supabase.auth.sign_out()
+# --- 2. 身分驗證處理邏輯 ---
+def handle_auth():
+    # A. 檢查網址是否有 OAuth 回傳的 code
+    if "code" in st.query_params:
+        auth_code = st.query_params.get("code")
+        try:
+            # 關鍵步驟：用 Code 換取 Session
+            res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
+            st.session_state.user = res.user
+            # 清除網址參數，避免重複觸發
+            st.query_params.clear()
             st.rerun()
+        except Exception as e:
+            st.error(f"驗證失敗：{e}")
+
+    # B. 如果 session_state 沒有 user，嘗試從 Supabase 客戶端獲取目前 session
+    if "user" not in st.session_state or st.session_state.user is None:
+        try:
+            session = supabase.auth.get_session()
+            if session:
+                st.session_state.user = session.user
+            else:
+                st.session_state.user = None
+        except:
+            st.session_state.user = None
+
+def login():
+    # 發起 Google 登入，redirect_to 必須完全符合 Supabase 設定
+    res = supabase.auth.sign_in_with_oauth({
+        "provider": "google",
+        "options": {
+            "redirect_to": st.secrets["REDIRECT_URI"]
+        }
+    })
+    if res.url:
+        # 在 Streamlit 中，使用 markdown 建立一個直接在原視窗開啟的連結最穩定
+        st.markdown(f'<a href="{res.url}" target="_self">點擊前往 Google 登入</a>', unsafe_allow_html=True)
+
+def logout():
+    supabase.auth.sign_out()
+    st.session_state.user = None
+    st.rerun()
+
+# 執行驗證邏輯
+handle_auth()
+
+# --- 3. UI 介面 ---
+st.title("🛒 分食趣 - 現場媒合")
+
+with st.sidebar:
+    st.header("👤 會員中心")
+    
+    if st.session_state.user:
+        user = st.session_state.user
+        st.success(f"已登入：{user.email}")
+        if st.button("登出"):
+            logout()
     else:
-        st.warning("請先登入以發布揪團")
-        auth_url = login_with_google()
-        if auth_url:
-            st.markdown(f'''
-                <a href="{auth_url}" target="_self" style="text-decoration: none;">
-                    <button style="width: 100%; background-color: #4285F4; color: white; padding: 12px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">
-                        🚀 使用 Google 一鍵登入
-                    </button>
-                </a>
-            ''', unsafe_allow_html=True)
+        st.warning("您尚未登入")
+        if st.button("使用 Google 登入"):
+            login()
+
+# 主畫面內容
+if st.session_state.user:
+    st.write("🎉 歡迎回來！現在你可以發起或加入分食。")
+    # 這裡放你後續的表單或清單
+else:
+    st.info("請先從左側邊欄登入以查看更多功能。")
 
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
