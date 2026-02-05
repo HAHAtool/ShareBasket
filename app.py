@@ -19,12 +19,12 @@ def get_user():
     return res.user if res else None
 
 def login_with_google():
-    """發起 Google OAuth 登入"""
-    # 這裡請確保在 Streamlit Cloud 的 Secrets 中有設定此網址
-    redirect_uri = st.secrets.get("REDIRECT_URI") or "http://localhost:8501"
+    # 這裡的 redirect_to 必須精確指向 Supabase 的 Callback 網址
     res = supabase.auth.sign_in_with_oauth({
         "provider": "google",
-        "options": {"redirect_to": st.secrets["REDIRECT_URI"]}
+        "options": {
+            "redirect_to": "https://gjvheugikmjzdmzymoji.supabase.co/auth/v1/callback" 
+        }
     })
     return res.url
 
