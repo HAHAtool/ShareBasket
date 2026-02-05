@@ -4,83 +4,88 @@ import os
 import math
 from dotenv import load_dotenv
 
-# --- 1. 初始化 Supabase 用戶端 ---
-@st.cache_resource
-def init_connection():
+# --- 1. 核心安全修正：不再使用 @st.cache_resource ---
+# 確保每個獨立連線都有自己的 Client 實例
+def get_supabase_client() -> Client:
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
 
-supabase: Client = init_connection()
+# 初始化本次 Session 的專屬用戶端
+if "supabase_client" not in st.session_state:
+    st.session_state.supabase_client = get_supabase_client()
 
-# --- 2. 身分驗證處理邏輯 ---
+supabase = st.session_state.supabase_client
+
+# --- 2. 處理驗證邏輯 ---
 def handle_auth():
-    # A. 檢查網址是否有 OAuth 回傳的 code
-    if "code" in st.query_params:
-        auth_code = st.query_params.get("code")
+    # 檢查 URL 中是否有 code (OAuth 成功回傳)
+    # 使用 st.query_params 而非全域變數，確保只針對當前使用者
+    params = st.query_params
+    if "code" in params:
         try:
-            # 關鍵步驟：用 Code 換取 Session
-            res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
+            # 只有當前 session 會執行這個交換
+            res = supabase.auth.exchange_code_for_session({"auth_code": params["code"]})
+            # 成功後立刻儲存 user 到 session_state
             st.session_state.user = res.user
-            # 清除網址參數，避免重複觸發
+            # 務必清空網址 code，避免重複刷新導致 403 或重複驗證
             st.query_params.clear()
             st.rerun()
         except Exception as e:
-            st.error(f"驗證失敗：{e}")
+            st.error(f"登入失敗，請確認是否為測試帳號：{e}")
 
-    # B. 如果 session_state 沒有 user，嘗試從 Supabase 客戶端獲取目前 session
-    if "user" not in st.session_state or st.session_state.user is None:
+    # 獲取目前真正的 Session 狀態
+    if "user" not in st.session_state:
         try:
-            session = supabase.auth.get_session()
-            if session:
-                st.session_state.user = session.user
-            else:
-                st.session_state.user = None
+            # 嘗試取得 session，若無則為 None
+            session_res = supabase.auth.get_session()
+            st.session_state.user = session_res.user if session_res else None
         except:
             st.session_state.user = None
 
+# --- 3. 登入與登出功能 ---
 def login():
-    # 發起 Google 登入，redirect_to 必須完全符合 Supabase 設定
+    # 強制指定跳轉 URI，確保安全性
     res = supabase.auth.sign_in_with_oauth({
         "provider": "google",
         "options": {
-            "redirect_to": st.secrets["REDIRECT_URI"]
+            "redirect_to": st.secrets["REDIRECT_URI"],
+            "query_params": {"prompt": "select_account"} # 強制顯示帳號選擇器，防止自動帶入
         }
     })
     if res.url:
-        # 在 Streamlit 中，使用 markdown 建立一個直接在原視窗開啟的連結最穩定
-        st.markdown(f'<a href="{res.url}" target="_self">點擊前往 Google 登入</a>', unsafe_allow_html=True)
+        st.markdown(f'<a href="{res.url}" target="_self">確認前往 Google 安全登入</a>', unsafe_allow_html=True)
 
 def logout():
     supabase.auth.sign_out()
-    st.session_state.user = None
+    st.session_state.clear() # 清空所有狀態，確保不留殘餘資訊
     st.rerun()
 
-# 執行驗證邏輯
+# 執行驗證流程
 handle_auth()
 
-# --- 3. UI 介面 ---
-st.title("🛒 分食趣 - 現場媒合")
+# --- 4. UI 介面 ---
+st.set_page_config(page_title="分食趣", page_icon="🛒")
 
 with st.sidebar:
     st.header("👤 會員中心")
-    
-    if st.session_state.user:
-        user = st.session_state.user
-        st.success(f"已登入：{user.email}")
-        if st.button("登出"):
+    if st.session_state.get("user"):
+        u = st.session_state.user
+        st.success(f"目前帳號：\n{u.email}")
+        if st.button("登出系統"):
             logout()
     else:
-        st.warning("您尚未登入")
-        if st.button("使用 Google 登入"):
+        st.info("尚未登入")
+        if st.button("🚀 使用 Google 一鍵登入"):
             login()
 
-# 主畫面內容
-if st.session_state.user:
-    st.write("🎉 歡迎回來！現在你可以發起或加入分食。")
-    # 這裡放你後續的表單或清單
+# 主畫面
+if st.session_state.get("user"):
+    st.title("✅ 您已安全登入")
+    st.write("現在顯示的內容僅限您本人可見。")
 else:
-    st.info("請先從左側邊欄登入以查看更多功能。")
+    st.title("🛒 分食趣")
+    st.write("請先從側邊欄登入以開始分食。")
 
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
