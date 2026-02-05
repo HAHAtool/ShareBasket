@@ -2,67 +2,161 @@ import streamlit as st
 from supabase import create_client, Client
 import os
 import math
+from dotenv import load_dotenv
 
-# 1. 安全讀取 Secrets
-url = st.secrets.get("SUPABASE_URL")
-key = st.secrets.get("SUPABASE_KEY")
+# 1. 初始化與環境設定
+load_dotenv()
+url = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
+key = st.secrets.get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(url, key)
 
-if not url or not key:
-    st.error("❌ 雲端 Secrets 沒設定好，請檢查 Streamlit Cloud 設定。")
-    st.stop()
+st.set_page_config(page_title="好市多分食趣", page_icon="🛒", layout="centered")
 
-# 2. 連接資料庫
-try:
-    supabase: Client = create_client(url, key)
-except Exception as e:
-    st.error(f"❌ 連接資料庫失敗: {e}")
-    st.stop()
+# --- 2. 處理 Google 登入邏輯 ---
+def get_user():
+    """檢查目前是否有登入使用者"""
+    res = supabase.auth.get_user()
+    return res.user if res else None
 
+def login_with_google():
+    """發起 Google OAuth 登入"""
+    # 這裡請確保在 Streamlit Cloud 的 Secrets 中有設定此網址
+    redirect_uri = st.secrets.get("REDIRECT_URI") or "http://localhost:8501"
+    res = supabase.auth.sign_in_with_oauth({
+        "provider": "google",
+        "options": {"redirect_to": redirect_uri}
+    })
+    return res.url
+
+# 初始化 Session State
+if "confirm_publish" not in st.session_state:
+    st.session_state.confirm_publish = False
+
+user = get_user()
+
+# --- 側邊欄：使用者資訊 ---
+with st.sidebar:
+    st.title("👤 會員中心")
+    if user:
+        st.write(f"你好，{user.email.split('@')[0]}！")
+        if st.button("登出"):
+            supabase.auth.sign_out()
+            st.rerun()
+    else:
+        st.warning("尚未登入")
+        auth_url = login_with_google()
+        st.markdown(f'''<a href="{auth_url}" target="_self" style="text-decoration: none;">
+            <div style="background-color: #4285F4; color: white; padding: 10px; border-radius: 5px; text-align: center;">
+                使用 Google 一鍵登入
+            </div>
+        </a>''', unsafe_allow_html=True)
+
+# --- 主畫面標題 ---
 st.title("🛒 好市多分食現場媒合")
 
-tab1, tab2 = st.tabs(["🔍 我要分食", "📢 我要發起"])
+tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
 
 # --- Tab 1: 顯示清單 ---
 with tab1:
     try:
-        res = supabase.table("groups").select("*, stores(branch_name)").eq("status", "active").execute()
+        res = supabase.table("groups").select("*, stores(branch_name)").eq("status", "active").order("created_at", desc=True).execute()
         items = res.data
         if not items:
-            st.info("目前沒人在揪喔！")
+            st.info("目前現場沒有人在揪喔，快去發起一個！")
         else:
             for item in items:
                 with st.container(border=True):
-                    st.write(f"### {item['item_name']} (剩 {item['remaining_units']})")
-                    st.write(f"📍 {item['stores']['branch_name']} | 單價: ${item['unit_price']}")
-                    if st.button(f"我要 +1", key=item['id']):
-                        # 更新邏輯
-                        new_remain = item['remaining_units'] - 1
-                        st.success("成功！請與發起人交貨。")
-                        supabase.table("groups").update({"remaining_units": new_remain}).eq("id", item['id']).execute()
-                        st.rerun()
+                    col_info, col_btn = st.columns([3, 1])
+                    with col_info:
+                        st.subheader(item['item_name'])
+                        st.write(f"📍 {item['stores']['branch_name']} | 👤 主揪：{item['creator_nickname']}")
+                        st.write(f"💵 單價：**${int(item['unit_price'])}** / 份")
+                    with col_btn:
+                        st.metric("剩餘", f"{item['remaining_units']} 份")
+                        if st.button(f"我要 +1", key=f"join_{item['id']}"):
+                            if not user:
+                                st.error("請先登入才能加入分食！")
+                            else:
+                                new_remain = item['remaining_units'] - 1
+                                status = 'active' if new_remain > 0 else 'closed'
+                                supabase.table("groups").update({"remaining_units": new_remain, "status": status}).eq("id", item['id']).execute()
+                                st.success(f"✅ 成功加入！請與 {item['creator_nickname']} 聯繫面交。")
+                                st.balloons()
+                                st.rerun()
     except Exception as e:
-        st.error(f"讀取清單出錯: {e}")
+        st.error(f"讀取資料失敗: {e}")
 
-# --- 發起分購的優化邏輯 ---
+# --- Tab 2: 發起揪團 (兩段式確認) ---
 with tab2:
-    st.subheader("📢 發起新揪團")
-    
-    # 數量分配
-    total_u = st.number_input("商品總入數", value=12)
-    my_u = st.number_input("主揪自留幾顆？", value=6, max_value=total_u)
-    others_u = total_u - my_u
-    
-    st.write(f"💡 開放鄰居認購：**{others_u}** 顆")
-    
-    # 兩段式確認
-    if st.button("📝 預覽發布內容"):
-        st.warning(f"確認發布：{sel_item}，總價 ${price}。您留 {my_u} 顆，求分 {others_u} 顆。")
-        
-        if st.button("🚀 確認正式發布"):
-            # 執行寫入資料庫
-            # ... (supabase.table("groups").insert(...)
-            st.success(f"🎉 {sel_item} ${price} 求分 {others_u} 顆發布成功！")
-            st.balloons()
-    except Exception as e:
-        st.error(f"發起功能出錯: {e}")
+    if not user:
+        st.warning("🛑 請先使用 Google 登入後再發起揪團。")
+    else:
+        if not st.session_state.confirm_publish:
+            # 步驟一：填寫資訊
+            st.subheader("第一步：填寫內容")
+            
+            stores_res = supabase.table("stores").select("*").execute().data
+            store_map = {s['branch_name']: s['id'] for s in stores_res}
+            selected_store = st.selectbox("在哪間分店？", list(store_map.keys()))
+            
+            pops = supabase.table("popular_items").select("*").execute().data
+            pop_names = [p['name'] for p in pops]
+            item_name = st.selectbox("商品名稱", pop_names)
+            
+            total_price = st.number_input("商品總價格", min_value=1, value=259)
+            total_u = st.number_input("商品總包裝入數", min_value=1, value=12)
+            
+            # 數量分配邏輯
+            col_my, col_others = st.columns(2)
+            with col_my:
+                my_stay = st.number_input("主揪自留數量", min_value=1, max_value=total_u, value=total_u//2)
+            with col_others:
+                others_get = total_u - my_stay
+                st.metric("求分走數量", f"{others_get} 份")
+            
+            u_price = math.ceil(total_price / total_u)
+            st.info(f"💡 系統計算單價：${u_price} / 份")
 
+            if st.button("📝 檢查發布內容", use_container_width=True):
+                st.session_state.confirm_publish = True
+                st.rerun()
+        
+        else:
+            # 步驟二：二次確認
+            st.subheader("第二步：確認並發布")
+            with st.status("🔍 發布資訊摘要", expanded=True):
+                st.write(f"📍 分店：{selected_store}")
+                st.write(f"📦 商品：{item_name}")
+                st.write(f"🙋 您自留：{my_stay} 份")
+                st.write(f"🤝 求分走：{others_get} 份")
+                st.write(f"💵 預估向對方收取：**${u_price * others_get} 元**")
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("❌ 修改內容", use_container_width=True):
+                    st.session_state.confirm_publish = False
+                    st.rerun()
+            with c2:
+                if st.button("✅ 確認正式發布", type="primary", use_container_width=True):
+                    # 寫入資料庫
+                    new_data = {
+                        "creator_id": user.id,
+                        "creator_nickname": user.email.split('@')[0],
+                        "store_id": store_map[selected_store],
+                        "item_name": item_name,
+                        "total_price": total_price,
+                        "total_units": total_u,
+                        "unit_price": u_price,
+                        "remaining_units": others_get,
+                        "creator_stay_units": my_stay
+                    }
+                    supabase.table("groups").insert(new_data).execute()
+                    
+                    # 顯示你要求的成功訊息格式
+                    st.success(f"🎉 {item_name} ${total_price} 求分 {others_get} 顆發布成功！")
+                    st.balloons()
+                    
+                    # 重置狀態
+                    st.session_state.confirm_publish = False
+                    # 延遲一下讓使用者看清楚訊息後回首頁
+                    st.rerun() # 可選
