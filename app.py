@@ -16,41 +16,55 @@ if "confirm_publish" not in st.session_state:
 if "temp_post" not in st.session_state:
     st.session_state.temp_post = None
 
-# --- 2. 認證邏輯：改為密碼版 ---
+# --- 2. 認證邏輯：強化版 (雙重檢查) ---
 def get_user():
+    # 優先從 Streamlit 的 SessionState 抓（最穩定）
+    if "user_obj" in st.session_state:
+        return st.session_state.user_obj
+    
+    # 如果沒有，才去問 SDK
     try:
         res = supabase.auth.get_session()
-        return res.user if res and res.session else None
+        if res and res.session:
+            # 順便存回 session_state 備用
+            st.session_state.user_obj = res.user
+            return res.user
+        return None
     except:
         return None
 
+# 執行獲取
 user = get_user()
 
-# --- 3. 側邊欄：登入註冊 UI ---
+# --- 3. 側邊欄：登入按鈕強化 ---
 with st.sidebar:
     st.header("👤 會員中心")
     if user:
         st.success(f"✅ 已登入: {user.email}")
         if st.button("登出"):
             supabase.auth.sign_out()
+            # 徹底清空，防止殘留
+            if "user_obj" in st.session_state:
+                del st.session_state.user_obj
             st.session_state.clear()
             st.rerun()
     else:
         auth_mode = st.radio("模式", ["登入", "註冊"], horizontal=True)
         email = st.text_input("Email")
         pw = st.text_input("密碼", type="password")
+        
         if auth_mode == "登入":
             if st.button("確認登入", use_container_width=True):
                 try:
                     res = supabase.auth.sign_in_with_password({"email": email, "password": pw})
                     if res.user:
-                        # 強制存入 session_state 以防 SDK 快取延遲
+                        # 【關鍵：手動注入】
                         st.session_state.user_obj = res.user
                         st.success("登入成功！")
-                        st.rerun()
+                        st.rerun() # 立即觸發重整，這時 get_user 就會抓到 user_obj
                 except Exception as e:
-                    # 這裡會顯示具體的失敗原因（例如：Invalid login credentials）
                     st.error(f"❌ 登入失敗: {str(e)}")
+
         else:
             if st.button("立即註冊", use_container_width=True):
                 try:
