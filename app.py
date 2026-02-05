@@ -16,6 +16,12 @@ st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
 def get_user():
     """檢查目前是否有登入使用者"""
     try:
+        # 獲取目前的 Session
+        session = supabase.auth.get_session()
+        if session:
+            return session.user
+        
+        # 如果沒有 session，嘗試獲取 user
         user_res = supabase.auth.get_user()
         return user_res.user if user_res else None
     except Exception:
@@ -48,13 +54,25 @@ def login_with_google():
 if "confirm_publish" not in st.session_state:
     st.session_state.confirm_publish = False
 
+# 強制檢查 OAuth 回傳
+if "code" in st.query_params:
+    # 稍微延遲一點點確保 Cookie 寫入
+    user = get_user()
+    if user:
+        # 登入成功，清除網址參數
+        st.query_params.clear()
+        st.rerun()
+
 user = get_user()
 
 # --- 側邊欄：使用者資訊 ---
 with st.sidebar:
     st.title("👤 會員中心")
     if user:
-        st.write(f"你好，{user.email.split('@')[0]}！")
+        # 取得 Email 前綴作為暱稱
+        nickname = user.email.split('@')[0]
+        st.success(f"✅ 登入成功")
+        st.write(f"你好，{nickname}！")
         if st.button("登出"):
             supabase.auth.sign_out()
             st.rerun()
