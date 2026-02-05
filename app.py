@@ -7,44 +7,34 @@ import hashlib
 import secrets
 import base64
 
-# 1. 初始化 (保持最簡化)
+# 1. 基礎連線
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
+
 if "supabase" not in st.session_state:
-    st.session_state.supabase = create_client(
-        st.secrets["SUPABASE_URL"], 
-        st.secrets["SUPABASE_KEY"]
-    )
+    st.session_state.supabase = create_client(url, key)
 supabase = st.session_state.supabase
 
-# 2. 核心：處理 Google 回傳
-# 這次我們不手動管 PKCE，我們讓 Supabase 嘗試「自動恢復」Session
-if "code" in st.query_params:
+# 2. 【核心】手動強制獲取 Session
+# 當網址有 code 時，這段代碼會強行執行交換並把結果存入 Streamlit 的記憶體
+params = st.query_params
+if "code" in params and "user_obj" not in st.session_state:
     try:
-        # 使用 SDK 最基礎的交換方式
-        # 如果 Supabase 後台開啟了 "Skip nonce check"，這步即使沒有 verifier 也有機會成功
-        res = supabase.auth.exchange_code_for_session({"auth_code": st.query_params["code"]})
-        if res.user:
-            st.session_state.user_obj = res.user
-        st.query_params.clear()
-        st.rerun()
+        # 強制換票
+        auth_response = supabase.auth.exchange_code_for_session({"auth_code": params["code"]})
+        if auth_response.user:
+            # 這是關鍵：手動存入 st.session_state，這是不會被瀏覽器擋掉的
+            st.session_state.user_obj = auth_response.user
+            # 成功後立刻清空網址，防止重複刷新報錯
+            st.query_params.clear()
+            st.rerun()
     except Exception as e:
-        # 如果交換失敗，清理掉 code 避免一直報錯，讓畫面維持在未登入狀態
+        st.error(f"登入交換失敗，請稍後再試。")
         st.query_params.clear()
 
-# 3. 檢查登入狀態 (多重保險)
-def check_user():
-    # 1. 檢查我們手動存的物件
-    if "user_obj" in st.session_state:
-        return st.session_state.user_obj
-    # 2. 嘗試從 SDK 內部緩存讀取
-    try:
-        session = supabase.auth.get_session()
-        if session and session.user:
-            return session.user
-    except:
-        return None
-    return None
-
-user = check_user()
+# 3. 定義顯示邏輯
+# 優先看 session_state，如果沒有再看 SDK (SDK 通常在跳轉後會是空的)
+user = st.session_state.get("user_obj")
 
 # 4. UI 介面
 st.title("🛒 分食趣")
@@ -52,32 +42,38 @@ st.title("🛒 分食趣")
 with st.sidebar:
     st.header("👤 會員中心")
     if user:
-        st.success(f"✅ 已登入: {user.email}")
-        if st.button("登出"):
+        st.success(f"✅ 歡迎，{user.email}")
+        if st.button("安全登出"):
             supabase.auth.sign_out()
-            st.session_state.clear()
+            st.session_state.clear() # 清空所有狀態
             st.rerun()
     else:
-        st.info("請完成 Google 登入")
-        # 關鍵：這裡我們強迫不使用 PKCE (如果 SDK 版本允許)
-        # 或者讓 Supabase 處理所有的安全挑戰
-        auth_res = supabase.auth.sign_in_with_oauth({
-            "provider": "google",
-            "options": {
-                "redirect_to": st.secrets["REDIRECT_URI"],
-                "query_params": {"prompt": "select_account"}
-            }
-        })
-        if auth_res.url:
-            st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
+        st.info("請點擊下方按鈕進行 Google 登入")
+        
+        # 準備 Google 登入網址
+        # 確保你的 Supabase 中 "Skip nonce check" 是開啟的
+        try:
+            auth_res = supabase.auth.sign_in_with_oauth({
+                "provider": "google",
+                "options": {
+                    "redirect_to": st.secrets["REDIRECT_URI"],
+                    "query_params": {"prompt": "select_account"}
+                }
+            })
+            if auth_res.url:
+                st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
+        except Exception as e:
+            st.error(f"連線錯誤: {e}")
 
-# 5. 主畫面
+# 5. 主功能畫面
 if user:
     st.balloons()
-    st.success("終於成功了！認證模組已就緒。")
-    st.write(f"歡迎回來，{user.email}")
+    st.write("---")
+    st.subheader("🎉 登入成功！")
+    st.write("認證機制已穩定運行。請告訴我接下來的業務邏輯：")
+    st.info("你需要：1. 數量自動試算 2. 兩段式發布確認 嗎？")
 else:
-    st.warning("請先由側邊欄登入以開始媒合分食。")
+    st.warning("請先由左側登入，即可開始使用分食媒合功能。")
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
 tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
