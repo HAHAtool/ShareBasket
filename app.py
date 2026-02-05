@@ -4,88 +4,87 @@ import os
 import math
 from dotenv import load_dotenv
 
-# --- 1. 核心安全修正：不再使用 @st.cache_resource ---
-# 確保每個獨立連線都有自己的 Client 實例
-def get_supabase_client() -> Client:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+# 1. 頁面基本設定（必須在最上方）
+st.set_page_config(page_title="分食趣", page_icon="🛒")
 
-# 初始化本次 Session 的專屬用戶端
-if "supabase_client" not in st.session_state:
-    st.session_state.supabase_client = get_supabase_client()
+# 2. 核心：建立一個絕對獨立的 Supabase Client
+def get_clean_client():
+    # 這裡不使用任何 cache，確保每個使用者進來都是全新的
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
-supabase = st.session_state.supabase_client
+# 初始化屬於這個 Session 的 Client
+if "supabase" not in st.session_state:
+    st.session_state.supabase = get_clean_client()
 
-# --- 2. 處理驗證邏輯 ---
-def handle_auth():
-    # 檢查 URL 中是否有 code (OAuth 成功回傳)
-    # 使用 st.query_params 而非全域變數，確保只針對當前使用者
+supabase: Client = st.session_state.supabase
+
+# 3. 核心：處理驗證代碼交換 (Auth Exchange)
+def handle_auth_flow():
+    # 抓取網址參數
     params = st.query_params
+    
     if "code" in params:
+        auth_code = params["code"]
         try:
-            # 只有當前 session 會執行這個交換
-            res = supabase.auth.exchange_code_for_session({"auth_code": params["code"]})
-            # 成功後立刻儲存 user 到 session_state
+            # 執行交換
+            res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
+            # 將 user 存入 session_state
             st.session_state.user = res.user
-            # 務必清空網址 code，避免重複刷新導致 403 或重複驗證
+            # 關鍵：成功後立刻清除網址參數，防止二次執行觸發 403
             st.query_params.clear()
+            # 強制刷新頁面，回到沒有 code 的乾淨狀態
             st.rerun()
         except Exception as e:
-            st.error(f"登入失敗，請確認是否為測試帳號：{e}")
+            # 如果是重複觸發，這裡會攔截到，我們直接清空參數就好
+            st.query_params.clear()
+            st.rerun()
 
-    # 獲取目前真正的 Session 狀態
-    if "user" not in st.session_state:
-        try:
-            # 嘗試取得 session，若無則為 None
-            session_res = supabase.auth.get_session()
-            st.session_state.user = session_res.user if session_res else None
-        except:
-            st.session_state.user = None
+# 4. 執行驗證與狀態更新
+handle_auth_flow()
 
-# --- 3. 登入與登出功能 ---
-def login():
-    # 強制指定跳轉 URI，確保安全性
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": "google",
-        "options": {
-            "redirect_to": st.secrets["REDIRECT_URI"],
-            "query_params": {"prompt": "select_account"} # 強制顯示帳號選擇器，防止自動帶入
-        }
-    })
-    if res.url:
-        st.markdown(f'<a href="{res.url}" target="_self">確認前往 Google 安全登入</a>', unsafe_allow_html=True)
+# 檢查目前 Supabase Client 裡真正的登入狀態
+try:
+    current_session = supabase.auth.get_session()
+    user = current_session.user if current_session else None
+except:
+    user = None
 
-def logout():
-    supabase.auth.sign_out()
-    st.session_state.clear() # 清空所有狀態，確保不留殘餘資訊
-    st.rerun()
-
-# 執行驗證流程
-handle_auth()
-
-# --- 4. UI 介面 ---
-st.set_page_config(page_title="分食趣", page_icon="🛒")
+# 5. UI 介面區
+st.title("🛒 分食趣")
 
 with st.sidebar:
     st.header("👤 會員中心")
-    if st.session_state.get("user"):
-        u = st.session_state.user
-        st.success(f"目前帳號：\n{u.email}")
-        if st.button("登出系統"):
-            logout()
+    if user:
+        st.success(f"已登入: {user.email}")
+        if st.button("登出"):
+            supabase.auth.sign_out()
+            st.session_state.clear()
+            st.rerun()
     else:
         st.info("尚未登入")
-        if st.button("🚀 使用 Google 一鍵登入"):
-            login()
+        if st.button("🚀 使用 Google 登入"):
+            # 發起登入
+            res = supabase.auth.sign_in_with_oauth({
+                "provider": "google",
+                "options": {
+                    "redirect_to": st.secrets["REDIRECT_URI"],
+                    "query_params": {"prompt": "select_account"}
+                }
+            })
+            if res.url:
+                # 使用最直接的連結跳轉
+                st.markdown(f'''
+                    <meta http-equiv="refresh" content="0; url={res.url}">
+                    <a href="{res.url}">如果沒有自動跳轉，請點擊這裡</a>
+                ''', unsafe_allow_html=True)
 
-# 主畫面
-if st.session_state.get("user"):
-    st.title("✅ 您已安全登入")
-    st.write("現在顯示的內容僅限您本人可見。")
+# 6. 主畫面邏輯
+if user:
+    st.write(f"### 歡迎，{user.email.split('@')[0]}！")
+    st.info("現在你可以看到分食清單與發起功能。")
+    # 這裡放你的 Table 與 Form...
 else:
-    st.title("🛒 分食趣")
-    st.write("請先從側邊欄登入以開始分食。")
+    st.warning("請先完成登入，以查看現場分食資訊。")
 
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
