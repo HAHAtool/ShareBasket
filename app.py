@@ -19,13 +19,21 @@ def get_user():
     return res.user if res else None
 
 def login_with_google():
-    target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app" 
+    # 這裡直接寫死你的 Streamlit 網址測試，結尾不要斜線
+    target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app"
+    
     res = supabase.auth.sign_in_with_oauth({
         "provider": "google",
         "options": {
             "redirect_to": target_url
         }
     })
+    
+    # --- 新增除錯檢查 ---
+    if not res.url:
+        st.error(f"Supabase 無法產生登入網址，請檢查 Provider 設定。")
+    # ------------------
+    
     return res.url
 
 # 初始化 Session State
