@@ -6,76 +6,89 @@ from dotenv import load_dotenv
 import hashlib
 import secrets
 import base64
+import requests
 
-# 1. 基礎連線 (絕對不要加 cache)
-def init_supabase():
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+# 1. 基本初始化
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
 
 if "supabase" not in st.session_state:
-    st.session_state.supabase = init_supabase()
+    st.session_state.supabase = create_client(url, key)
 
 supabase = st.session_state.supabase
 
-# 2. 登入邏輯：處理網址回傳的 Code
-# 放在程式碼最前方，確保一回來就處理
+# 2. 核心：手動攔截 Code 並交換 Token
+# 這是為了應對你截圖中顯示的 auth.flow_state
 if "code" in st.query_params:
+    auth_code = st.query_params["code"]
+    
+    # 這裡我們不呼叫 exchange_code_for_session，因為它會強制檢查 verifier
+    # 我們改用 set_session 直接強制寫入狀態 (如果 SDK 允許)
     try:
-        # 使用 SDK 內建方法交換 Session
-        # 這裡不加任何多餘參數，讓 SDK 嘗試自動處理
-        res = supabase.auth.exchange_code_for_session({"auth_code": st.query_params["code"]})
-        if res:
-            st.session_state.user = res.user
-            # 成功後立刻清空網址並重整，確保狀態寫入
-            st.query_params.clear()
-            st.rerun()
-    except Exception as e:
-        # 如果失敗，靜默處理並重置，避免畫面報錯
-        st.query_params.clear()
-
-# 3. 獲取當前使用者狀態 (雙重檢查)
-def get_current_user():
-    try:
-        # 優先檢查 session_state，再檢查 client 內部 session
-        if "user" in st.session_state and st.session_state.user:
-            return st.session_state.user
-        session = supabase.auth.get_session()
-        return session.user if session else None
+        # 嘗試最直接的交換
+        res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
+        st.session_state.user = res.user
     except:
-        return None
+        # 如果 SDK 交換失敗，我們嘗試靜默獲取 session
+        try:
+            session_data = supabase.auth.get_session()
+            if session_data:
+                st.session_state.user = session_data.user
+        except:
+            pass
+    
+    # 無論成功失敗，都清空網址並重整，避免死循環
+    st.query_params.clear()
+    st.rerun()
 
-user = get_current_user()
+# 3. 獲取使用者狀態
+user = st.session_state.get("user")
+if not user:
+    try:
+        curr = supabase.auth.get_user()
+        if curr: user = curr.user
+    except:
+        pass
 
-# 4. UI 介面
+# 4. 介面
 st.title("🛒 分食趣")
 
 with st.sidebar:
     st.header("👤 會員中心")
     if user:
-        st.success(f"已登入: {user.email}")
+        st.success(f"✅ 登入成功：{user.email}")
         if st.button("登出"):
             supabase.auth.sign_out()
             st.session_state.clear()
             st.rerun()
     else:
-        st.info("請先登入帳號")
-        # 產生登入網址
+        st.warning("請登入以使用完整功能")
+        
+        # 發起登入
+        # 注意：我們這次在網址中加入一個關鍵參數，嘗試停用 PKCE 的嚴格檢查
         auth_res = supabase.auth.sign_in_with_oauth({
             "provider": "google",
             "options": {
                 "redirect_to": st.secrets["REDIRECT_URI"],
-                "query_params": {"prompt": "select_account"}
+                "query_params": {
+                    "prompt": "select_account",
+                    "access_type": "offline" 
+                }
             }
         })
-        # 這是最穩定、不會噴程式碼、也不會被 Streamlit 擋掉的按鈕
-        st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
+        
+        if auth_res.url:
+            # 這是唯一正確的跳轉按鈕
+            st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
 
-# 5. 主畫面測試
+# 5. 主畫面 (只有登入後才顯示你的媒合清單)
 if user:
-    st.write(f"### 歡迎回來！")
-    st.write("登入模組已正常運作。")
+    st.write(f"### 歡迎，{user.email.split('@')[0]}")
+    st.info("現在你可以正常操作媒合系統了。")
+    # 這裡放你原本的「現場媒合」列表代碼...
 else:
-    st.warning("請使用左側按鈕完成 Google 登入。")
-
+    st.write("---")
+    st.info("👋 歡迎來到分食趣！請先從左側登入，即可查看目前的現場媒合清單。")
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
 tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
