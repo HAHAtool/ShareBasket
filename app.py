@@ -7,45 +7,45 @@ import hashlib
 import secrets
 import base64
 
-# --- 1. 基礎設定 ---
-st.set_page_config(page_title="分食趣", page_icon="🛒")
+# 1. 基礎連線 (絕對不要加 cache)
+def init_supabase():
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 
-# 確保 Client 獨立，但不使用容易遺失狀態的 PKCE 流程
 if "supabase" not in st.session_state:
-    st.session_state.supabase = create_client(
-        st.secrets["SUPABASE_URL"], 
-        st.secrets["SUPABASE_KEY"]
-    )
+    st.session_state.supabase = init_supabase()
 
-supabase: Client = st.session_state.supabase
+supabase = st.session_state.supabase
 
-# --- 2. 核心：處理登入狀態 ---
-# 改用 get_session()，因為 Supabase SDK 會在背景嘗試恢復 Session
-user = None
-try:
-    # 這裡會嘗試抓取 cookie 或緩存中的 session
-    session_res = supabase.auth.get_session()
-    if session_res:
-        user = session_res.user
-except:
-    pass
-
-# 如果網址有 code，但 user 還是空的，嘗試進行一次交換
-# 這次加入流控，避免報錯
-if "code" in st.query_params and not user:
+# 2. 登入邏輯：處理網址回傳的 Code
+# 放在程式碼最前方，確保一回來就處理
+if "code" in st.query_params:
     try:
-        # 使用 auth.set_session 或 exchange_code 之前，確保我們不依賴 local storage
+        # 使用 SDK 內建方法交換 Session
+        # 這裡不加任何多餘參數，讓 SDK 嘗試自動處理
         res = supabase.auth.exchange_code_for_session({"auth_code": st.query_params["code"]})
-        user = res.user
-        st.query_params.clear()
-        st.rerun()
+        if res:
+            st.session_state.user = res.user
+            # 成功後立刻清空網址並重整，確保狀態寫入
+            st.query_params.clear()
+            st.rerun()
     except Exception as e:
-        # 如果報 code verifier 錯誤，通常是因為 SDK 強制啟用 PKCE
-        # 我們直接清空網址，讓使用者重試一次（通常第二次 session 就會抓到了）
+        # 如果失敗，靜默處理並重置，避免畫面報錯
         st.query_params.clear()
-        st.rerun()
 
-# --- 3. UI 介面 ---
+# 3. 獲取當前使用者狀態 (雙重檢查)
+def get_current_user():
+    try:
+        # 優先檢查 session_state，再檢查 client 內部 session
+        if "user" in st.session_state and st.session_state.user:
+            return st.session_state.user
+        session = supabase.auth.get_session()
+        return session.user if session else None
+    except:
+        return None
+
+user = get_current_user()
+
+# 4. UI 介面
 st.title("🛒 分食趣")
 
 with st.sidebar:
@@ -57,33 +57,24 @@ with st.sidebar:
             st.session_state.clear()
             st.rerun()
     else:
-        st.info("請點擊下方按鈕登入")
-        
-        # 發起登入的關鍵修正：
-        # 既然 PKCE 容易斷掉，我們改用最單純的跳轉
-        if st.button("🚀 使用 Google 一鍵登入"):
-            auth_res = supabase.auth.sign_in_with_oauth({
-                "provider": "google",
-                "options": {
-                    "redirect_to": st.secrets["REDIRECT_URI"],
-                    "query_params": {"prompt": "select_account"}
-                }
-            })
-            if auth_res.url:
-                # 這裡直接用 js 跳轉，能維持更高的 Session 穩定度
-                st.markdown(f'<js>window.location.href="{auth_res.url}"</js>', unsafe_allow_html=True)
-                # 備用方案
-                st.link_button("按此前往 Google 驗證", auth_res.url)
+        st.info("請先登入帳號")
+        # 產生登入網址
+        auth_res = supabase.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {
+                "redirect_to": st.secrets["REDIRECT_URI"],
+                "query_params": {"prompt": "select_account"}
+            }
+        })
+        # 這是最穩定、不會噴程式碼、也不會被 Streamlit 擋掉的按鈕
+        st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
 
-# --- 4. 主畫面內容 ---
+# 5. 主畫面測試
 if user:
-    st.balloons()
-    st.write(f"### 成功登入！")
-    st.write(f"你的用戶 ID: `{user.id}`")
-    st.markdown("---")
-    st.success("登入系統已釐清完成。現在，請告訴我你想要的「分食數量試算」邏輯是什麼？")
+    st.write(f"### 歡迎回來！")
+    st.write("登入模組已正常運作。")
 else:
-    st.warning("請先從左側邊欄登入帳號。")
+    st.warning("請使用左側按鈕完成 Google 登入。")
 
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
