@@ -15,26 +15,37 @@ st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
 # --- 2. 處理 Google 登入邏輯 ---
 def get_user():
     """檢查目前是否有登入使用者"""
-    res = supabase.auth.get_user()
-    return res.user if res else None
+    try:
+        # 將變數改名為 user_res，明確代表這是獲取使用者的回應
+        user_res = supabase.auth.get_user()
+        return user_res.user if user_res else None
+    except Exception:
+        return None
 
 def login_with_google():
-    # 這裡直接寫死你的 Streamlit 網址測試，結尾不要斜線
+    """發起 Google OAuth 登入"""
     target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app"
     
-    res = supabase.auth.sign_in_with_oauth({
-        "provider": "google",
-        "options": {
-            "redirect_to": target_url
-        }
-    })
-    
-    # --- 新增除錯檢查 ---
-    if not res.url:
-        st.error(f"Supabase 無法產生登入網址，請檢查 Provider 設定。")
-    # ------------------
-    
-    return res.url
+    try:
+        # 將變數改名為 auth_res，明確代表這是授權請求的回應
+        auth_res = supabase.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {
+                "redirect_to": target_url
+            }
+        })
+        
+        # 檢查 Supabase 是否真的有回傳跳轉網址
+        if not auth_res or not auth_res.url:
+            st.error("❌ Supabase 回傳網址為空，請檢查 Supabase 控制台的 Google Provider 設定。")
+            return None
+            
+        return auth_res.url
+
+    except Exception as e:
+        # 如果 Client ID 或 Secret 有誤，這裡會抓到具體錯誤訊息
+        st.error(f"❌ 登入初始化失敗: {str(e)}")
+        return None
 
 # 初始化 Session State
 if "confirm_publish" not in st.session_state:
