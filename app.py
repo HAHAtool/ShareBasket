@@ -1,77 +1,57 @@
-import streamlit as st
-from supabase import create_client, Client
-import os
-import math
-from dotenv import load_dotenv
-
-# 1. 初始化
-load_dotenv()
-url = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
-key = st.secrets.get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(url, key)
-
-st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
-
-# --- 2. 處理 Google 登入邏輯 ---
+# --- 2. 處理 Google 登入邏輯 (強制修正版) ---
 def get_user():
-    """獲取目前登入的使用者物件"""
+    """獲取目前登入的使用者"""
     try:
-        # 在 Streamlit 中，這行會檢查瀏覽器傳回的 Cookie
-        res = supabase.auth.get_user()
-        if res and res.user:
-            return res.user
+        # 在 Streamlit 中，這會檢查當前的 auth session
+        user_data = supabase.auth.get_user()
+        if user_data and user_data.user:
+            return user_data.user
         return None
-    except:
+    except Exception:
         return None
 
-# --- 3. 核心修正：強制偵測網址列的 code ---
-# 如果網址列有 code，代表 Google 剛跳回。我們顯示一個手動按鈕來確保 Session 建立
+# --- 3. 核心修正：手動處理網址回傳的 code ---
+# 如果網址有 code 參數，代表 Google 剛跳轉回來
 if "code" in st.query_params:
-    st.info("正在完成登入驗證...")
-    # 執行一次 get_user 嘗試建立連線
-    u = get_user()
-    if u:
-        st.success("身分驗證成功！")
-        if st.button("點擊進入系統"):
-            st.query_params.clear() # 清除網址列的 code
-            st.rerun()
-    else:
-        # 如果 get_user 沒抓到，可能是延遲，提供手動刷新的按鈕
-        st.warning("驗證中，如果畫面沒動請點擊下方按鈕")
-        if st.button("重新整理頁面以登入"):
-            st.rerun()
+    # 嘗試獲取使用者資訊以完成 code 與 session 的交換
+    current_user = get_user()
+    
+    # 無論是否抓到 user，只要網址有 code 就執行一次清理並重整
+    # 這能解決網址代碼過期導致的 403 或驗證失敗
+    if st.button("🚀 驗證完成，點擊進入系統"):
+        st.query_params.clear() 
+        st.rerun()
 
 user = get_user()
 
-# --- 側邊欄：使用者資訊 ---
+# --- 側邊欄顯示 ---
 with st.sidebar:
     st.title("👤 會員中心")
     if user:
         nickname = user.email.split('@')[0]
-        st.success(f"✅ 已登入：{nickname}")
-        if st.button("登出"):
+        st.success(f"✅ 歡迎回來：{nickname}")
+        if st.button("登出系統"):
             supabase.auth.sign_out()
             st.rerun()
     else:
-        st.warning("尚未登入")
-        # 直接使用 Supabase 產生的 URL
-        target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app"
-        auth_res = supabase.auth.sign_in_with_oauth({
-            "provider": "google",
-            "options": {"redirect_to": target_url}
-        })
-        
-        if auth_res and auth_res.url:
-            # 這是目前最穩定的寫法：在新視窗打開 Google，完成後關閉它回原視窗重新整理
+        st.warning("請先登入以發布揪團")
+        # 這裡直接生成 Google 登入網址
+        auth_url = login_with_google()
+        if auth_url:
             st.markdown(f'''
-                <a href="{auth_res.url}" target="_blank" style="text-decoration: none;">
-                    <button style="width:100%; background-color:#4285F4; color:white; border:none; padding:12px; border-radius:5px; cursor:pointer; font-weight:bold;">
-                        🚀 點擊 Google 一鍵登入
+                <a href="{auth_url}" target="_self" style="text-decoration: none;">
+                    <button style="
+                        width: 100%;
+                        background-color: #4285F4;
+                        color: white;
+                        padding: 12px;
+                        border: none;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        font-weight: bold;">
+                        Google 一鍵登入
                     </button>
                 </a>
-                <p style="font-size:12px; color:gray; text-align:center; margin-top:5px;">
-                    (在新視窗選完帳號後，回到此頁點擊重新整理)
-                </p>
             ''', unsafe_allow_html=True)
 
 # --- 接下來是原本的主畫面 Tab1, Tab2 (維持不變) ---
