@@ -8,87 +8,87 @@ import secrets
 import base64
 import requests
 
-# 1. 基本初始化
-url = st.secrets["SUPABASE_URL"]
-key = st.secrets["SUPABASE_KEY"]
-
+# 1. 基礎連線
 if "supabase" not in st.session_state:
-    st.session_state.supabase = create_client(url, key)
+    st.session_state.supabase = create_client(
+        st.secrets["SUPABASE_URL"], 
+        st.secrets["SUPABASE_KEY"]
+    )
 
 supabase = st.session_state.supabase
 
-# 2. 核心：手動攔截 Code 並交換 Token
-# 這是為了應對你截圖中顯示的 auth.flow_state
-if "code" in st.query_params:
-    auth_code = st.query_params["code"]
-    
-    # 這裡我們不呼叫 exchange_code_for_session，因為它會強制檢查 verifier
-    # 我們改用 set_session 直接強制寫入狀態 (如果 SDK 允許)
+# 2. 【核心】強制攔截 Code 並寫入 Session
+params = st.query_params
+if "code" in params and "user" not in st.session_state:
     try:
-        # 嘗試最直接的交換
-        res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
-        st.session_state.user = res.user
-    except:
-        # 如果 SDK 交換失敗，我們嘗試靜默獲取 session
-        try:
-            session_data = supabase.auth.get_session()
-            if session_data:
-                st.session_state.user = session_data.user
-        except:
-            pass
-    
-    # 無論成功失敗，都清空網址並重整，避免死循環
-    st.query_params.clear()
-    st.rerun()
+        # 直接執行交換
+        res = supabase.auth.exchange_code_for_session({"auth_code": params["code"]})
+        if res.session:
+            # 強制手動存入 session_state，不依賴 SDK 的自動緩存
+            st.session_state.user = res.user
+            st.session_state.access_token = res.session.access_token
+            
+            # 成功抓到後，立刻清理網址並重整
+            st.query_params.clear()
+            st.rerun()
+    except Exception as e:
+        # 如果交換失敗，清理參數讓使用者重試
+        st.query_params.clear()
+        st.rerun()
 
-# 3. 獲取使用者狀態
-user = st.session_state.get("user")
-if not user:
+# 3. 定義獲取使用者的邏輯
+def get_user():
+    # 優先讀取我們手動塞進去的狀態
+    if "user" in st.session_state:
+        return st.session_state.user
+    # 次之才問 SDK (SDK 偶爾會失靈)
     try:
-        curr = supabase.auth.get_user()
-        if curr: user = curr.user
+        s = supabase.auth.get_session()
+        if s and s.user:
+            return s.user
     except:
-        pass
+        return None
+    return None
 
-# 4. 介面
+user = get_user()
+
+# 4. UI 畫面
 st.title("🛒 分食趣")
 
 with st.sidebar:
     st.header("👤 會員中心")
     if user:
-        st.success(f"✅ 登入成功：{user.email}")
-        if st.button("登出"):
+        st.success(f"✅ 已登入：{user.email}")
+        if st.button("登出系統"):
             supabase.auth.sign_out()
+            if "user" in st.session_state:
+                del st.session_state.user
             st.session_state.clear()
             st.rerun()
     else:
-        st.warning("請登入以使用完整功能")
-        
-        # 發起登入
-        # 注意：我們這次在網址中加入一個關鍵參數，嘗試停用 PKCE 的嚴格檢查
+        st.info("請登入以查看媒合清單")
         auth_res = supabase.auth.sign_in_with_oauth({
             "provider": "google",
             "options": {
                 "redirect_to": st.secrets["REDIRECT_URI"],
-                "query_params": {
-                    "prompt": "select_account",
-                    "access_type": "offline" 
-                }
+                "query_params": {"prompt": "select_account"}
             }
         })
-        
-        if auth_res.url:
-            # 這是唯一正確的跳轉按鈕
-            st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
+        # 確保使用官方 link_button
+        st.link_button("🚀 使用 Google 一鍵登入", auth_res.url)
 
-# 5. 主畫面 (只有登入後才顯示你的媒合清單)
+# 5. 主功能區
 if user:
-    st.write(f"### 歡迎，{user.email.split('@')[0]}")
-    st.info("現在你可以正常操作媒合系統了。")
-    # 這裡放你原本的「現場媒合」列表代碼...
-else:
+    st.balloons()
+    st.write(f"### 歡迎回來，{user.email.split('@')[0]}！")
+    st.success("Google 串接已完全打通。")
+    
+    # 這裡開始放你原本的媒合清單...
     st.write("---")
-    st.info("👋 歡迎來到分食趣！請先從左側登入，即可查看目前的現場媒合清單。")
+    st.subheader("🛒 目前現場媒合")
+    # (插入你之前的 Table 或列表代碼)
+else:
+    st.warning("👋 歡迎！請先完成登入。")
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
 tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
