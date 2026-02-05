@@ -16,12 +16,11 @@ st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
 def get_user():
     """檢查目前是否有登入使用者"""
     try:
-        # 獲取目前的 Session
-        session = supabase.auth.get_session()
-        if session:
-            return session.user
+        # 優先檢查 Session，這是 OAuth 回傳最穩定的讀取方式
+        session_res = supabase.auth.get_session()
+        if session_res and session_res.session:
+            return session_res.session.user
         
-        # 如果沒有 session，嘗試獲取 user
         user_res = supabase.auth.get_user()
         return user_res.user if user_res else None
     except Exception:
@@ -29,7 +28,7 @@ def get_user():
 
 def login_with_google():
     """發起 Google OAuth 登入"""
-    # 確保這裡的網址與 Supabase Site URL 完全一致，且結尾沒有斜線
+    # 確保此網址與 Supabase Site URL 完全一致
     target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app"
     
     try:
@@ -39,29 +38,23 @@ def login_with_google():
                 "redirect_to": target_url
             }
         })
-        
-        if not auth_res or not auth_res.url:
-            st.error("❌ Supabase 回傳網址為空，請檢查 Supabase 控制台的 Google Provider 設定。")
-            return None
-            
-        return auth_res.url
-
+        return auth_res.url if auth_res else None
     except Exception as e:
         st.error(f"❌ 登入初始化失敗: {str(e)}")
         return None
 
+# --- 3. 關鍵修正：處理 OAuth 跳轉回來的代碼 ---
+# 當網址出現 ?code=... 時，強制觸發一次狀態更新
+if "code" in st.query_params:
+    temp_user = get_user()
+    if temp_user:
+        # 登入成功，清空網址參數並重整頁面
+        st.query_params.clear()
+        st.rerun()
+
 # 初始化 Session State
 if "confirm_publish" not in st.session_state:
     st.session_state.confirm_publish = False
-
-# 強制檢查 OAuth 回傳
-if "code" in st.query_params:
-    # 稍微延遲一點點確保 Cookie 寫入
-    user = get_user()
-    if user:
-        # 登入成功，清除網址參數
-        st.query_params.clear()
-        st.rerun()
 
 user = get_user()
 
@@ -69,7 +62,6 @@ user = get_user()
 with st.sidebar:
     st.title("👤 會員中心")
     if user:
-        # 取得 Email 前綴作為暱稱
         nickname = user.email.split('@')[0]
         st.success(f"✅ 登入成功")
         st.write(f"你好，{nickname}！")
@@ -79,10 +71,7 @@ with st.sidebar:
     else:
         st.warning("請先登入以使用完整功能")
         auth_url = login_with_google()
-        
         if auth_url:
-            # 方案：建立一個明顯的按鈕連結
-            # 使用 target="_blank" 強制在新分頁開啟，這是目前最穩定的做法
             st.markdown(f'''
                 <a href="{auth_url}" target="_blank" style="text-decoration: none;">
                     <div style="
@@ -92,13 +81,12 @@ with st.sidebar:
                         border-radius: 5px; 
                         text-align: center;
                         font-weight: bold;
-                        box-shadow: 0px 2px 5px rgba(0,0,0,0.2);
                         cursor: pointer;">
                         🚀 點擊前往 Google 登入
                     </div>
                 </a>
                 <p style="font-size: 12px; color: gray; text-align: center; margin-top: 10px;">
-                    (登入成功後請關閉分頁並重新整理本頁)
+                    (登入完成後請關閉分頁並重新整理本頁)
                 </p>
             ''', unsafe_allow_html=True)
 
@@ -110,6 +98,7 @@ tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
 # --- Tab 1: 顯示清單 ---
 with tab1:
     try:
+        # 增加會員判斷：只有登入者能看到誰發布的
         res = supabase.table("groups").select("*, stores(branch_name)").eq("status", "active").order("created_at", desc=True).execute()
         items = res.data
         if not items:
@@ -131,7 +120,7 @@ with tab1:
                                 new_remain = item['remaining_units'] - 1
                                 status = 'active' if new_remain > 0 else 'closed'
                                 supabase.table("groups").update({"remaining_units": new_remain, "status": status}).eq("id", item['id']).execute()
-                                st.success(f"✅ 成功加入！請與 {item['creator_nickname']} 聯繫面交。")
+                                st.success(f"✅ 成功加入！請與 {item['creator_nickname']} 聯繫。")
                                 st.balloons()
                                 st.rerun()
     except Exception as e:
@@ -143,9 +132,9 @@ with tab2:
         st.warning("🛑 請先使用 Google 登入後再發起揪團。")
     else:
         if not st.session_state.confirm_publish:
-            # 步驟一：填寫資訊
             st.subheader("第一步：填寫內容")
             
+            # 抓取資料庫商店與商品
             stores_res = supabase.table("stores").select("*").execute().data
             store_map = {s['branch_name']: s['id'] for s in stores_res}
             selected_store = st.selectbox("在哪間分店？", list(store_map.keys()))
@@ -157,10 +146,10 @@ with tab2:
             total_price = st.number_input("商品總價格", min_value=1, value=259)
             total_u = st.number_input("商品總包裝入數", min_value=1, value=12)
             
-            # 數量分配邏輯
+            # 數量分配優化：主揪自留與求分
             col_my, col_others = st.columns(2)
             with col_my:
-                my_stay = st.number_input("主揪自留數量", min_value=1, max_value=total_u, value=total_u//2)
+                my_stay = st.number_input("主揪自留數量", min_value=1, max_value=total_u, value=1)
             with col_others:
                 others_get = total_u - my_stay
                 st.metric("求分走數量", f"{others_get} 份")
@@ -169,18 +158,19 @@ with tab2:
             st.info(f"💡 系統計算單價：${u_price} / 份")
 
             if st.button("📝 檢查發布內容", use_container_width=True):
+                # 儲存暫存資料到 session_state 供下一步使用
+                st.session_state.temp_post = {
+                    "item": item_name, "price": total_price, "u_price": u_price,
+                    "others": others_get, "my_stay": my_stay, "store_id": store_map[selected_store]
+                }
                 st.session_state.confirm_publish = True
                 st.rerun()
         
         else:
-            # 步驟二：二次確認
+            # 第二步：二次確認
+            post = st.session_state.temp_post
             st.subheader("第二步：確認並發布")
-            with st.status("🔍 發布資訊摘要", expanded=True):
-                st.write(f"📍 分店：{selected_store}")
-                st.write(f"📦 商品：{item_name}")
-                st.write(f"🙋 您自留：{my_stay} 份")
-                st.write(f"🤝 求分走：{others_get} 份")
-                st.write(f"💵 預估向對方收取：**${u_price * others_get} 元**")
+            st.warning(f"請確認：{post['item']} ${post['price']}，您自留 {post['my_stay']} 份，求分 {post['others']} 份？")
             
             c1, c2 = st.columns(2)
             with c1:
@@ -189,25 +179,23 @@ with tab2:
                     st.rerun()
             with c2:
                 if st.button("✅ 確認正式發布", type="primary", use_container_width=True):
-                    # 寫入資料庫
+                    # 寫入資料庫，帶入 user.id 辨認身分
                     new_data = {
                         "creator_id": user.id,
                         "creator_nickname": user.email.split('@')[0],
-                        "store_id": store_map[selected_store],
-                        "item_name": item_name,
-                        "total_price": total_price,
-                        "total_units": total_u,
-                        "unit_price": u_price,
-                        "remaining_units": others_get,
-                        "creator_stay_units": my_stay
+                        "store_id": post['store_id'],
+                        "item_name": post['item'],
+                        "total_price": post['price'],
+                        "total_units": post['my_stay'] + post['others'],
+                        "unit_price": post['u_price'],
+                        "remaining_units": post['others'],
+                        "creator_stay_units": post['my_stay']
                     }
                     supabase.table("groups").insert(new_data).execute()
                     
-                    # 顯示成功訊息
-                    st.success(f"🎉 {item_name} ${total_price} 求分 {others_get} 顆發布成功！")
+                    # 顯示指定的成功訊息格式
+                    st.success(f"🎉 {post['item']} ${post['price']} 求分 {post['others']} 顆發布成功！")
                     st.balloons()
                     
-                    # 重置狀態
                     st.session_state.confirm_publish = False
-                    # 延遲刷新回首頁
-                    st.rerun()
+                    # 這裡不自動 rerun，讓使用者看清楚成功訊息
