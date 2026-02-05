@@ -40,25 +40,32 @@ def login_with_google():
         st.error(f"❌ 登入初始化失敗: {str(e)}")
         return None
 
-# --- 3. 處理登入邏輯與 Session ---
+# --- 3. 處理登入邏輯與 Session (修正版) ---
 
-# 偵測 OAuth 回傳
+# 初始化 session_state 中的 user
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+# 關鍵：偵測網址中的 code 並換取 Session
 if "code" in st.query_params:
-    temp_user = get_user()
-    if temp_user:
+    auth_code = st.query_params.get("code")
+    try:
+        # 使用 code 向 Supabase 換取正式的 Session
+        res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
+        st.session_state.user = res.user
+        # 清除網址上的 code，避免重複觸發，並重新整理頁面
         st.query_params.clear()
         st.rerun()
-    else:
-        # 如果網址有 code 但還沒拿到 user，顯示手動重整按鈕解決延遲
-        st.info("驗證中，若畫面未跳轉請點擊下方按鈕")
-        if st.button("確認完成登入"):
-            st.rerun()
+    except Exception as e:
+        st.error(f"登入驗證失敗: {str(e)}")
 
-# 初始化發布狀態
-if "confirm_publish" not in st.session_state:
-    st.session_state.confirm_publish = False
+# 定期檢查 Session 是否有效（例如頁面刷新時）
+if not st.session_state.user:
+    curr_user = get_user()
+    if curr_user:
+        st.session_state.user = curr_user
 
-user = get_user()
+user = st.session_state.user
 
 # --- 4. 側邊欄：使用者資訊 ---
 with st.sidebar:
