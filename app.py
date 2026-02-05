@@ -10,7 +10,7 @@ url = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
 key = st.secrets.get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(url, key)
 
-st.set_page_config(page_title="好市多分食趣", page_icon="🛒", layout="centered")
+st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
 
 # --- 2. 處理 Google 登入邏輯 ---
 def get_user():
@@ -19,11 +19,11 @@ def get_user():
     return res.user if res else None
 
 def login_with_google():
-    # 這裡的 redirect_to 必須精確指向 Supabase 的 Callback 網址
+    target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app" 
     res = supabase.auth.sign_in_with_oauth({
         "provider": "google",
         "options": {
-            "redirect_to": "https://gjvheugikmjzdmzymoji.supabase.co/auth/v1/callback" 
+            "redirect_to": target_url
         }
     })
     return res.url
