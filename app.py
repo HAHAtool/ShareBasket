@@ -3,80 +3,104 @@ from supabase import create_client, Client
 import os
 import math
 from dotenv import load_dotenv
+import hashlib
+import secrets
+import base64
 
+# 1. 初始化設定
 st.set_page_config(page_title="分食趣", page_icon="🛒")
 
-# 1. 確保每一位使用者的 Supabase Client 都是獨立且乾淨的
-def get_supabase():
-    if "supabase_instance" not in st.session_state:
-        st.session_state.supabase_instance = create_client(
-            st.secrets["SUPABASE_URL"], 
-            st.secrets["SUPABASE_KEY"]
-        )
-    return st.session_state.supabase_instance
+# 確保每一位使用者有獨立的 Client
+if "supabase" not in st.session_state:
+    st.session_state.supabase = create_client(
+        st.secrets["SUPABASE_URL"], 
+        st.secrets["SUPABASE_KEY"]
+    )
 
-supabase = get_supabase()
+supabase: Client = st.session_state.supabase
 
-# 2. 處理 OAuth 回傳 (Code Exchange)
-# 這裡必須在頁面最上方，確保一跳轉回來就立刻攔截 Code
+# --- 2. 手動 PKCE 工具函式 ---
+def generate_pkce_pair():
+    # 產生 code_verifier
+    verifier = secrets.token_urlsafe(64)
+    # 產生 code_challenge (SHA256 雜湊後進行 Base64 編碼)
+    sha256 = hashlib.sha256(verifier.encode('utf-8')).digest()
+    challenge = base64.urlsafe_b64encode(sha256).decode('utf-8').replace('=', '')
+    return verifier, challenge
+
+# --- 3. 處理 OAuth 回傳 ---
 params = st.query_params
 if "code" in params:
     auth_code = params["code"]
-    try:
-        # 執行交換，並直接更新 session_state
-        res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
-        st.session_state.user = res.user
-        # 成功後立刻清理網址，避免 403 重複觸發
-        st.query_params.clear()
-        st.rerun()
-    except Exception as e:
-        st.error(f"驗證程序發生錯誤: {e}")
+    # 從 session_state 找回剛才存下來的 verifier
+    code_verifier = st.session_state.get("pkce_verifier")
+    
+    if auth_code and code_verifier:
+        try:
+            # 關鍵：帶入 code 和當初產生的 verifier 進行交換
+            res = supabase.auth.exchange_code_for_session({
+                "auth_code": auth_code,
+                "code_verifier": code_verifier
+            })
+            st.session_state.user = res.user
+            # 成功後清理，避免重複觸發
+            st.query_params.clear()
+            if "pkce_verifier" in st.session_state:
+                del st.session_state["pkce_verifier"]
+            st.rerun()
+        except Exception as e:
+            st.error(f"⚠️ 驗證失敗: {e}")
+            st.query_params.clear()
+    else:
+        st.error("❌ 找不到驗證密鑰 (Verifier)，請嘗試重新登入。")
         st.query_params.clear()
 
-# 3. 檢查登入狀態
-# 不要只依賴 session_state，要檢查 Client 內部的真實狀態
-current_user = None
+# --- 4. 登入/登出邏輯 ---
+def handle_login():
+    # 1. 自己產生 PKCE 密鑰
+    verifier, challenge = generate_pkce_pair()
+    # 2. 存在 session_state 裡，等跳轉回來用
+    st.session_state["pkce_verifier"] = verifier
+    
+    # 3. 發起 OAuth 並帶入 challenge
+    res = supabase.auth.sign_in_with_oauth({
+        "provider": "google",
+        "options": {
+            "redirect_to": st.secrets["REDIRECT_URI"],
+            "query_params": {"prompt": "select_account"},
+            "code_challenge": challenge,
+            "code_challenge_method": "s256"
+        }
+    })
+    if res.url:
+        st.link_button("🚀 確認前往 Google 登入", res.url)
+
+# --- 5. UI 介面 ---
+user = None
 try:
     session_res = supabase.auth.get_session()
     if session_res and session_res.session:
-        current_user = session_res.session.user
+        user = session_res.session.user
 except:
-    current_user = None
+    user = None
 
-# 4. UI 介面區
 st.title("🛒 分食趣")
 
 with st.sidebar:
     st.header("👤 會員中心")
-    if current_user:
-        st.success(f"已登入: {current_user.email}")
-        if st.button("安全登出"):
+    if user:
+        st.success(f"已登入: {user.email}")
+        if st.button("登出"):
             supabase.auth.sign_out()
             st.session_state.clear()
             st.rerun()
     else:
-        st.info("尚未登入")
-        # 準備 Google 登入網址
-        try:
-            res = supabase.auth.sign_in_with_oauth({
-                "provider": "google",
-                "options": {
-                    "redirect_to": st.secrets["REDIRECT_URI"],
-                    "query_params": {"prompt": "select_account"}
-                }
-            })
-            # 使用原生 Link Button，這是最安全、最不會被擋的方式
-            st.link_button("🚀 使用 Google 一鍵登入", res.url)
-        except Exception as e:
-            st.error(f"無法取得登入連結: {e}")
+        st.info("請先登入")
+        handle_login()
 
-# 5. 主畫面
-if current_user:
-    st.balloons()
-    st.write(f"### 歡迎使用，{current_user.email.split('@')[0]}")
-    st.write("您現在可以開始查看或發起分食。")
-else:
-    st.warning("請先使用左側選單登入帳號。")
+if user:
+    st.write("### 🎉 登入成功！")
+    st.write("你現在可以正常使用分食功能了。")
 
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
