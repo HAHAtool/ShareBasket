@@ -1,13 +1,8 @@
 import streamlit as st
 from supabase import create_client, Client
-import os
 import math
-from dotenv import load_dotenv
-import hashlib
-import secrets
-import base64
 
-# 1. 基礎連線
+# 1. 基礎連線與初始化
 if "supabase" not in st.session_state:
     st.session_state.supabase = create_client(
         st.secrets["SUPABASE_URL"], 
@@ -15,95 +10,67 @@ if "supabase" not in st.session_state:
     )
 supabase = st.session_state.supabase
 
-# --- 2. 手動 PKCE 生成器 (符合 RFC 7636 標準) ---
-def get_pkce():
-    # 生成隨機 Verifier
-    verifier = secrets.token_urlsafe(64)
-    # 生成 Challenge
-    sha256 = hashlib.sha256(verifier.encode('utf-8')).digest()
-    challenge = base64.urlsafe_b64encode(sha256).decode('utf-8').replace('=', '')
-    return verifier, challenge
+# 初始化 Session State 變數
+if "confirm_publish" not in st.session_state:
+    st.session_state.confirm_publish = False
+if "temp_post" not in st.session_state:
+    st.session_state.temp_post = None
 
-# --- 3. 處理 Callback ---
-params = st.query_params
-if "code" in params:
-    auth_code = params["code"]
-    # 關鍵：從 session_state 找回跳轉前的鑰匙
-    stored_verifier = st.session_state.get("my_verifier")
-    
-    if auth_code and stored_verifier:
-        try:
-            # 手動傳入 verifier 進行交換，這能解決 "code verifier should be non-empty"
-            res = supabase.auth.exchange_code_for_session({
-                "auth_code": auth_code,
-                "code_verifier": stored_verifier
-            })
-            if res.user:
-                st.session_state.user_obj = res.user
-                st.query_params.clear()
-                st.rerun()
-        except Exception as e:
-            st.error(f"❌ 交換失敗: {str(e)}")
-            # 如果失敗，顯示調試資訊
-            st.write(f"已嘗試使用 Verifier: `{stored_verifier[:10]}...`")
-    else:
-        if not stored_verifier:
-            st.error("❌ 系統遺失了驗證密鑰 (Verifier)，請重新點擊登入。")
-    
-    # 清理網址參數
-    if st.button("清除錯誤網址"):
-        st.query_params.clear()
-        st.rerun()
+# --- 2. 認證邏輯：獲取使用者 ---
+def get_user():
+    try:
+        # 獲取當前 Session
+        res = supabase.auth.get_session()
+        if res and res.session:
+            return res.user
+        return None
+    except:
+        return None
 
-# --- 4. 取得使用者 ---
-user = st.session_state.get("user_obj")
+user = get_user()
 
-# --- 5. UI 介面 ---
+# --- 3. UI 介面：側邊欄登入/註冊 ---
 st.title("🛒 分食趣")
 
 with st.sidebar:
     st.header("👤 會員中心")
     if user:
         st.success(f"✅ 已登入: {user.email}")
+        st.caption("登入效期：12 小時 (請至後台設定)")
         if st.button("登出"):
+            supabase.auth.sign_out()
             st.session_state.clear()
             st.rerun()
     else:
-        # 登入邏輯
-        v, c = get_pkce()
-        if st.button("🚀 使用 Google 一鍵登入"):
-            # 存入 session_state
-            st.session_state["my_verifier"] = v
-            
-            # 發起請求
-            auth_res = supabase.auth.sign_in_with_oauth({
-                "provider": "google",
-                "options": {
-                    "redirect_to": st.secrets["REDIRECT_URI"],
-                    "code_challenge": c,
-                    "code_challenge_method": "s256",
-                    "query_params": {"prompt": "select_account"}
-                }
-            })
-            if auth_res.url:
-                # 使用官方 link_button 跳轉
-                st.link_button("確認前往 Google", auth_res.url)
+        auth_mode = st.radio("模式", ["登入", "註冊"], horizontal=True)
+        email = st.text_input("Email")
+        password = st.text_input("密碼", type="password")
+        
+        if auth_mode == "登入":
+            if st.button("確認登入", use_container_width=True):
+                try:
+                    res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                    if res.user:
+                        st.success("登入成功！")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ 登入失敗: {str(e)}")
+        else:
+            if st.button("立即註冊", use_container_width=True):
+                try:
+                    # 註冊後預設會發送驗證信，除非你在 Supabase 關閉驗證
+                    res = supabase.auth.sign_up({"email": email, "password": password})
+                    st.info("註冊成功！請檢查信箱驗證（或直接嘗試登入，視後台設定而定）。")
+                except Exception as e:
+                    st.error(f"❌ 註冊失敗: {str(e)}")
 
-# --- 6. 業務邏輯展示區 ---
-if user:
-    st.balloons()
-    st.success("Google 串接終於成功！")
-    st.write("---")
-    st.subheader("💡 接下來的任務：數量自動試算")
-    st.write("既然登入通了，我們現在來做『分食計算機』吧？")
-else:
-    st.info("請先完成登入，即可開始媒合。")
-# --- 5. 主畫面標題與 Tab ---
-st.title("🛒 分食趣-現場媒合")
+# --- 4. 主畫面：分食功能 ---
+st.markdown("---")
 tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
 
 with tab1:
     try:
+        # 讀取進行中的媒合
         res = supabase.table("groups").select("*, stores(branch_name)").eq("status", "active").order("created_at", desc=True).execute()
         items = res.data
         if not items:
@@ -120,7 +87,7 @@ with tab1:
                         st.metric("剩餘", f"{item['remaining_units']} 份")
                         if st.button(f"我要 +1", key=f"join_{item['id']}"):
                             if not user:
-                                st.error("請先登入才能加入！")
+                                st.error("🛑 請先登入才能加入！")
                             else:
                                 new_remain = item['remaining_units'] - 1
                                 status = 'active' if new_remain > 0 else 'closed'
@@ -133,10 +100,11 @@ with tab1:
 
 with tab2:
     if not user:
-        st.warning("🛑 請先登入 Google 帳號。")
+        st.warning("🛑 發起分食前，請先於側邊欄完成會員登入。")
     else:
         if not st.session_state.confirm_publish:
             st.subheader("📢 第一步：填寫內容")
+            # 獲取分店與熱門商品
             stores_res = supabase.table("stores").select("*").execute().data
             store_map = {s['branch_name']: s['id'] for s in stores_res}
             selected_store = st.selectbox("在哪間分店？", list(store_map.keys()))
@@ -165,15 +133,15 @@ with tab2:
         else:
             post = st.session_state.temp_post
             st.subheader("📢 第二步：確認發布")
-            st.warning(f"確認：{post['item']} ${post['price']}，您留 {post['my_stay']} 份，求分 {post['others']} 份？")
+            st.warning(f"確認：{post['item']} 總價 ${post['price']}，您留 {post['my_stay']} 份，求分 {post['others']} 份？")
             
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("❌ 修改內容"):
+                if st.button("❌ 修改內容", use_container_width=True):
                     st.session_state.confirm_publish = False
                     st.rerun()
             with c2:
-                if st.button("✅ 正式發布", type="primary"):
+                if st.button("✅ 正式發布", type="primary", use_container_width=True):
                     new_data = {
                         "creator_id": user.id,
                         "creator_nickname": user.email.split('@')[0],
@@ -183,10 +151,10 @@ with tab2:
                         "total_units": post['my_stay'] + post['others'],
                         "unit_price": post['u_price'],
                         "remaining_units": post['others'],
-                        "creator_stay_units": post['my_stay']
+                        "creator_stay_units": post['my_stay'],
+                        "status": "active"
                     }
                     supabase.table("groups").insert(new_data).execute()
-                    # 指定成功訊息格式
-                    st.success(f"🎉 {post['item']} ${post['price']} 求分 {post['others']} 顆發布成功！")
+                    st.success(f"🎉 {post['item']} 發布成功！剩餘 {post['others']} 份等待領取。")
                     st.balloons()
                     st.session_state.confirm_publish = False
