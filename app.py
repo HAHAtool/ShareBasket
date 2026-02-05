@@ -4,66 +4,60 @@ import os
 import math
 from dotenv import load_dotenv
 
-# 1. 頁面基本設定（必須在最上方）
 st.set_page_config(page_title="分食趣", page_icon="🛒")
 
-# 2. 核心：建立一個絕對獨立的 Supabase Client
-def get_clean_client():
-    # 這裡不使用任何 cache，確保每個使用者進來都是全新的
-    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+# 1. 確保每一位使用者的 Supabase Client 都是獨立且乾淨的
+def get_supabase():
+    if "supabase_instance" not in st.session_state:
+        st.session_state.supabase_instance = create_client(
+            st.secrets["SUPABASE_URL"], 
+            st.secrets["SUPABASE_KEY"]
+        )
+    return st.session_state.supabase_instance
 
-# 初始化屬於這個 Session 的 Client
-if "supabase" not in st.session_state:
-    st.session_state.supabase = get_clean_client()
+supabase = get_supabase()
 
-supabase: Client = st.session_state.supabase
+# 2. 處理 OAuth 回傳 (Code Exchange)
+# 這裡必須在頁面最上方，確保一跳轉回來就立刻攔截 Code
+params = st.query_params
+if "code" in params:
+    auth_code = params["code"]
+    try:
+        # 執行交換，並直接更新 session_state
+        res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
+        st.session_state.user = res.user
+        # 成功後立刻清理網址，避免 403 重複觸發
+        st.query_params.clear()
+        st.rerun()
+    except Exception as e:
+        st.error(f"驗證程序發生錯誤: {e}")
+        st.query_params.clear()
 
-# 3. 核心：處理驗證代碼交換 (Auth Exchange)
-def handle_auth_flow():
-    # 抓取網址參數
-    params = st.query_params
-    
-    if "code" in params:
-        auth_code = params["code"]
-        try:
-            # 執行交換
-            res = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
-            # 將 user 存入 session_state
-            st.session_state.user = res.user
-            # 關鍵：成功後立刻清除網址參數，防止二次執行觸發 403
-            st.query_params.clear()
-            # 強制刷新頁面，回到沒有 code 的乾淨狀態
-            st.rerun()
-        except Exception as e:
-            # 如果是重複觸發，這裡會攔截到，我們直接清空參數就好
-            st.query_params.clear()
-            st.rerun()
-
-# 4. 執行驗證與狀態更新
-handle_auth_flow()
-
-# 檢查目前 Supabase Client 裡真正的登入狀態
+# 3. 檢查登入狀態
+# 不要只依賴 session_state，要檢查 Client 內部的真實狀態
+current_user = None
 try:
-    current_session = supabase.auth.get_session()
-    user = current_session.user if current_session else None
+    session_res = supabase.auth.get_session()
+    if session_res and session_res.session:
+        current_user = session_res.session.user
 except:
-    user = None
+    current_user = None
 
-# 5. UI 介面區
+# 4. UI 介面區
 st.title("🛒 分食趣")
 
 with st.sidebar:
     st.header("👤 會員中心")
-    if user:
-        st.success(f"已登入: {user.email}")
-        if st.button("登出"):
+    if current_user:
+        st.success(f"已登入: {current_user.email}")
+        if st.button("安全登出"):
             supabase.auth.sign_out()
             st.session_state.clear()
             st.rerun()
     else:
         st.info("尚未登入")
-        if st.button("🚀 使用 Google 登入"):
-            # 發起登入
+        # 準備 Google 登入網址
+        try:
             res = supabase.auth.sign_in_with_oauth({
                 "provider": "google",
                 "options": {
@@ -71,20 +65,18 @@ with st.sidebar:
                     "query_params": {"prompt": "select_account"}
                 }
             })
-            if res.url:
-                # 使用最直接的連結跳轉
-                st.markdown(f'''
-                    <meta http-equiv="refresh" content="0; url={res.url}">
-                    <a href="{res.url}">如果沒有自動跳轉，請點擊這裡</a>
-                ''', unsafe_allow_html=True)
+            # 使用原生 Link Button，這是最安全、最不會被擋的方式
+            st.link_button("🚀 使用 Google 一鍵登入", res.url)
+        except Exception as e:
+            st.error(f"無法取得登入連結: {e}")
 
-# 6. 主畫面邏輯
-if user:
-    st.write(f"### 歡迎，{user.email.split('@')[0]}！")
-    st.info("現在你可以看到分食清單與發起功能。")
-    # 這裡放你的 Table 與 Form...
+# 5. 主畫面
+if current_user:
+    st.balloons()
+    st.write(f"### 歡迎使用，{current_user.email.split('@')[0]}")
+    st.write("您現在可以開始查看或發起分食。")
 else:
-    st.warning("請先完成登入，以查看現場分食資訊。")
+    st.warning("請先使用左側選單登入帳號。")
 
 # --- 5. 主畫面標題與 Tab ---
 st.title("🛒 分食趣-現場媒合")
