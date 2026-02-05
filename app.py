@@ -16,7 +16,6 @@ st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
 def get_user():
     """檢查目前是否有登入使用者"""
     try:
-        # 將變數改名為 user_res，明確代表這是獲取使用者的回應
         user_res = supabase.auth.get_user()
         return user_res.user if user_res else None
     except Exception:
@@ -24,10 +23,10 @@ def get_user():
 
 def login_with_google():
     """發起 Google OAuth 登入"""
+    # 確保這裡的網址與 Supabase Site URL 完全一致，且結尾沒有斜線
     target_url = "https://cdhbz3unr3cpvmwnvjpyjr.streamlit.app"
     
     try:
-        # 將變數改名為 auth_res，明確代表這是授權請求的回應
         auth_res = supabase.auth.sign_in_with_oauth({
             "provider": "google",
             "options": {
@@ -35,7 +34,6 @@ def login_with_google():
             }
         })
         
-        # 檢查 Supabase 是否真的有回傳跳轉網址
         if not auth_res or not auth_res.url:
             st.error("❌ Supabase 回傳網址為空，請檢查 Supabase 控制台的 Google Provider 設定。")
             return None
@@ -43,7 +41,6 @@ def login_with_google():
         return auth_res.url
 
     except Exception as e:
-        # 如果 Client ID 或 Secret 有誤，這裡會抓到具體錯誤訊息
         st.error(f"❌ 登入初始化失敗: {str(e)}")
         return None
 
@@ -64,11 +61,24 @@ with st.sidebar:
     else:
         st.warning("尚未登入")
         auth_url = login_with_google()
-        st.markdown(f'''<a href="{auth_url}" target="_self" style="text-decoration: none;">
-            <div style="background-color: #4285F4; color: white; padding: 10px; border-radius: 5px; text-align: center;">
-                使用 Google 一鍵登入
-            </div>
-        </a>''', unsafe_allow_html=True)
+        if auth_url:
+            # --- 修正後的 HTML 按鈕：解決 IFrame 跳轉問題 ---
+            st.markdown(f'''
+                <a href="{auth_url}" target="_self" style="text-decoration: none;">
+                    <button style="
+                        width: 100%;
+                        background-color: #4285F4;
+                        color: white;
+                        padding: 10px;
+                        border: none;
+                        border-radius: 5px;
+                        cursor: pointer;
+                        font-weight: bold;
+                        text-align: center;">
+                        Google 一鍵登入
+                    </button>
+                </a>
+            ''', unsafe_allow_html=True)
 
 # --- 主畫面標題 ---
 st.title("🛒 好市多分食現場媒合")
@@ -171,11 +181,11 @@ with tab2:
                     }
                     supabase.table("groups").insert(new_data).execute()
                     
-                    # 顯示你要求的成功訊息格式
+                    # 顯示成功訊息
                     st.success(f"🎉 {item_name} ${total_price} 求分 {others_get} 顆發布成功！")
                     st.balloons()
                     
                     # 重置狀態
                     st.session_state.confirm_publish = False
-                    # 延遲一下讓使用者看清楚訊息後回首頁
-                    st.rerun() # 可選
+                    # 延遲刷新回首頁
+                    st.rerun()
