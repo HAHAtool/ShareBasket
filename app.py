@@ -62,26 +62,24 @@ with st.sidebar:
         st.warning("尚未登入")
         auth_url = login_with_google()
         if auth_url:
-            # --- 修正後的 HTML 按鈕：解決 IFrame 跳轉問題 ---
+            # 關鍵修改：使用 target="_top" 強制跳出 Streamlit 的框架
             st.markdown(f'''
-                <a href="{auth_url}" target="_self" style="text-decoration: none;">
-                    <button style="
-                        width: 100%;
-                        background-color: #4285F4;
-                        color: white;
-                        padding: 10px;
-                        border: none;
-                        border-radius: 5px;
-                        cursor: pointer;
+                <a href="{auth_url}" target="_top" style="text-decoration: none;">
+                    <div style="
+                        background-color: #4285F4; 
+                        color: white; 
+                        padding: 10px; 
+                        border-radius: 5px; 
+                        text-align: center;
                         font-weight: bold;
-                        text-align: center;">
-                        Google 一鍵登入
-                    </button>
+                        cursor: pointer;">
+                        使用 Google 一鍵登入
+                    </div>
                 </a>
             ''', unsafe_allow_html=True)
 
 # --- 主畫面標題 ---
-st.title("🛒 好市多分食現場媒合")
+st.title("🛒 分食趣-現場媒合")
 
 tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
 
