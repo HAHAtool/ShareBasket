@@ -75,29 +75,77 @@ with st.sidebar:
 # --- 4. 頁面邏輯：會員中心 ---
 if user and page == "我的會員中心":
     st.title("🛡️ 會員中心")
+    
+    # 修改暱稱
     with st.expander("📝 修改個人資料"):
-        new_nick = st.text_input("我的顯示暱稱", value=get_nickname(user.id))
+        current_nick = get_nickname(user.id)
+        new_nick = st.text_input("我的顯示暱稱", value=current_nick)
         if st.button("更新暱稱"):
             supabase.table("profiles").upsert({"id": user.id, "nickname": new_nick}).execute()
             st.success("更新成功！")
             st.rerun()
 
     m1, m2, m3 = st.tabs(["📢 我的揪團", "🤝 我跟的團", "⌛ 歷史記錄"])
+    
     with m1:
+        # 【我的揪團】顯示自己發起且尚未結束的
         my_groups = supabase.table("groups").select("*").eq("creator_id", user.id).eq("status", "active").execute().data
-        if not my_groups: st.write("目前沒有進行中的揪團。")
-        for g in my_groups:
-            with st.container(border=True):
-                st.write(f"**{g['item_name']}**")
-                st.write(f"剩餘份數：{g['remaining_units']} 份")
-                if g['has_new_join']: st.warning("🆕 有新成員加入！")
-                c1, c2 = st.columns(2)
-                if c1.button("標記已讀", key=f"read_{g['id']}"):
-                    supabase.table("groups").update({"has_new_join": False}).eq("id", g['id']).execute()
-                    st.rerun()
-                if c2.button("結案/刪除", key=f"close_{g['id']}"):
-                    supabase.table("groups").update({"status": "closed", "has_new_join": False}).eq("id", g['id']).execute()
-                    st.rerun()
+        if not my_groups: 
+            st.info("目前沒有進行中的發起。")
+        else:
+            for g in my_groups:
+                with st.container(border=True):
+                    st.write(f"**{g['item_name']}**")
+                    st.write(f"剩餘份數：{g['remaining_units']} 份")
+                    
+                    # 顯示有誰跟團了
+                    members = supabase.table("group_members").select("user_id").eq("group_id", g['id']).execute().data
+                    if members:
+                        st.write("👥 已跟團成員：")
+                        for m in members:
+                            st.caption(f"- {get_nickname(m['user_id'])}")
+                    
+                    if g['has_new_join']: st.warning("🆕 有新成員加入！")
+                    
+                    c1, c2 = st.columns(2)
+                    if c1.button("標記已讀", key=f"read_{g['id']}"):
+                        supabase.table("groups").update({"has_new_join": False}).eq("id", g['id']).execute()
+                        st.rerun()
+                    if c2.button("結案/刪除", key=f"close_{g['id']}"):
+                        supabase.table("groups").update({"status": "closed", "has_new_join": False}).eq("id", g['id']).execute()
+                        st.rerun()
+
+    with m2:
+        # 【我跟的團】修正邏輯：必須 join groups 表才能看到細節
+        try:
+            # 使用 inner join 語法確保只抓到有效的揪團資料
+            followed_res = supabase.table("group_members").select("group_id, groups(*)").eq("user_id", user.id).execute()
+            followed = followed_res.data if followed_res.data else []
+            
+            active_followed = [f for f in followed if f.get('groups') and f['groups']['status'] == 'active']
+            
+            if not active_followed:
+                st.info("目前沒有參加中的揪團。")
+            else:
+                for f in active_followed:
+                    g = f['groups']
+                    with st.container(border=True):
+                        st.write(f"✅ 已參加 **{g['creator_nickname']}** 的揪團")
+                        st.subheader(g['item_name'])
+                        st.write(f"💰 需支付：${int(g['unit_price'])}")
+                        st.caption(f"發起時間：{g['created_at'][:16].replace('T', ' ')}")
+        except Exception as e:
+            st.error(f"載入『我跟的團』失敗: {e}")
+
+    with m3:
+        # 【歷史記錄】包含自己發起已結束 + 自己參加已結束的
+        st.write("📌 你過去發起且已結束的揪團：")
+        history = supabase.table("groups").select("*").eq("creator_id", user.id).eq("status", "closed").order("created_at", desc=True).execute().data
+        if not history:
+            st.caption("尚無歷史記錄。")
+        else:
+            for h in history:
+                st.write(f"🌑 {h['item_name']} ({h['created_at'][:10]})")
 
 # --- 5. 頁面邏輯：找分食/發起 ---
 elif page == "找分食/發起":
