@@ -24,7 +24,7 @@ def login_with_google():
     redirect_uri = st.secrets.get("REDIRECT_URI") or "http://localhost:8501"
     res = supabase.auth.sign_in_with_oauth({
         "provider": "google",
-        "options": {"redirect_to": redirect_uri}
+        "options": {"redirect_to": st.secrets["REDIRECT_URI"]}
     })
     return res.url
 
