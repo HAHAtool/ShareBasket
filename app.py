@@ -43,9 +43,14 @@ with st.sidebar:
             if st.button("確認登入", use_container_width=True):
                 try:
                     res = supabase.auth.sign_in_with_password({"email": email, "password": pw})
-                    if res.user: st.rerun()
+                    if res.user:
+                        # 強制存入 session_state 以防 SDK 快取延遲
+                        st.session_state.user_obj = res.user
+                        st.success("登入成功！")
+                        st.rerun()
                 except Exception as e:
-                    st.error(f"登入失敗: {e}")
+                    # 這裡會顯示具體的失敗原因（例如：Invalid login credentials）
+                    st.error(f"❌ 登入失敗: {str(e)}")
         else:
             if st.button("立即註冊", use_container_width=True):
                 try:
