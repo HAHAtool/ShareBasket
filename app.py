@@ -2,7 +2,7 @@ import streamlit as st
 from supabase import create_client, Client
 import math
 
-# 1. 基礎連線與初始化
+# 1. 基礎連線與 Session 初始化
 if "supabase" not in st.session_state:
     st.session_state.supabase = create_client(
         st.secrets["SUPABASE_URL"], 
@@ -10,33 +10,27 @@ if "supabase" not in st.session_state:
     )
 supabase = st.session_state.supabase
 
-# 初始化 Session State 變數
+# 確保原有狀態變數存在
 if "confirm_publish" not in st.session_state:
     st.session_state.confirm_publish = False
 if "temp_post" not in st.session_state:
     st.session_state.temp_post = None
 
-# --- 2. 認證邏輯：獲取使用者 ---
+# --- 2. 認證邏輯：改為密碼版 ---
 def get_user():
     try:
-        # 獲取當前 Session
         res = supabase.auth.get_session()
-        if res and res.session:
-            return res.user
-        return None
+        return res.user if res and res.session else None
     except:
         return None
 
 user = get_user()
 
-# --- 3. UI 介面：側邊欄登入/註冊 ---
-st.title("🛒 分食趣")
-
+# --- 3. 側邊欄：登入註冊 UI ---
 with st.sidebar:
     st.header("👤 會員中心")
     if user:
         st.success(f"✅ 已登入: {user.email}")
-        st.caption("登入效期：12 小時 (請至後台設定)")
         if st.button("登出"):
             supabase.auth.sign_out()
             st.session_state.clear()
@@ -44,33 +38,29 @@ with st.sidebar:
     else:
         auth_mode = st.radio("模式", ["登入", "註冊"], horizontal=True)
         email = st.text_input("Email")
-        password = st.text_input("密碼", type="password")
-        
+        pw = st.text_input("密碼", type="password")
         if auth_mode == "登入":
             if st.button("確認登入", use_container_width=True):
                 try:
-                    res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                    if res.user:
-                        st.success("登入成功！")
-                        st.rerun()
+                    res = supabase.auth.sign_in_with_password({"email": email, "password": pw})
+                    if res.user: st.rerun()
                 except Exception as e:
-                    st.error(f"❌ 登入失敗: {str(e)}")
+                    st.error(f"登入失敗: {e}")
         else:
             if st.button("立即註冊", use_container_width=True):
                 try:
-                    # 註冊後預設會發送驗證信，除非你在 Supabase 關閉驗證
-                    res = supabase.auth.sign_up({"email": email, "password": password})
-                    st.info("註冊成功！請檢查信箱驗證（或直接嘗試登入，視後台設定而定）。")
+                    supabase.auth.sign_up({"email": email, "password": pw})
+                    st.info("註冊成功！請檢查信箱或嘗試直接登入。")
                 except Exception as e:
-                    st.error(f"❌ 註冊失敗: {str(e)}")
+                    st.error(f"註冊失敗: {e}")
 
-# --- 4. 主畫面：分食功能 ---
-st.markdown("---")
+# --- 4. 主畫面與 Tab 功能 (完整還原你的代碼) ---
+st.title("🛒 分食趣-現場媒合")
 tab1, tab2 = st.tabs(["🔍 找分食清單", "📢 我要發起揪團"])
 
 with tab1:
     try:
-        # 讀取進行中的媒合
+        # 讀取 groups 內容
         res = supabase.table("groups").select("*, stores(branch_name)").eq("status", "active").order("created_at", desc=True).execute()
         items = res.data
         if not items:
@@ -87,7 +77,7 @@ with tab1:
                         st.metric("剩餘", f"{item['remaining_units']} 份")
                         if st.button(f"我要 +1", key=f"join_{item['id']}"):
                             if not user:
-                                st.error("🛑 請先登入才能加入！")
+                                st.error("請先登入才能加入！")
                             else:
                                 new_remain = item['remaining_units'] - 1
                                 status = 'active' if new_remain > 0 else 'closed'
@@ -100,7 +90,7 @@ with tab1:
 
 with tab2:
     if not user:
-        st.warning("🛑 發起分食前，請先於側邊欄完成會員登入。")
+        st.warning("🛑 請先登入帳號。")
     else:
         if not st.session_state.confirm_publish:
             st.subheader("📢 第一步：填寫內容")
@@ -122,6 +112,7 @@ with tab2:
                 others_get = total_u - my_stay
                 st.metric("求分走數量", f"{others_get} 份")
             
+            # 使用你原本的 math.ceil 邏輯
             u_price = math.ceil(price / total_u)
             if st.button("📝 檢查發布內容", use_container_width=True):
                 st.session_state.temp_post = {
@@ -133,7 +124,7 @@ with tab2:
         else:
             post = st.session_state.temp_post
             st.subheader("📢 第二步：確認發布")
-            st.warning(f"確認：{post['item']} 總價 ${post['price']}，您留 {post['my_stay']} 份，求分 {post['others']} 份？")
+            st.warning(f"確認：{post['item']} ${post['price']}，您留 {post['my_stay']} 份，求分 {post['others']} 份？")
             
             c1, c2 = st.columns(2)
             with c1:
@@ -142,8 +133,9 @@ with tab2:
                     st.rerun()
             with c2:
                 if st.button("✅ 正式發布", type="primary", use_container_width=True):
+                    # 這裡對齊你修正後的資料庫欄位 (creator_id 改為 uuid, 增加 self_units)
                     new_data = {
-                        "creator_id": user.id,
+                        "creator_id": user.id,  # 這現在是 UUID 格式
                         "creator_nickname": user.email.split('@')[0],
                         "store_id": post['store_id'],
                         "item_name": post['item'],
@@ -151,10 +143,14 @@ with tab2:
                         "total_units": post['my_stay'] + post['others'],
                         "unit_price": post['u_price'],
                         "remaining_units": post['others'],
-                        "creator_stay_units": post['my_stay'],
+                        "self_units": post['my_stay'],  # 對應你資料庫定義的 self_units
                         "status": "active"
                     }
-                    supabase.table("groups").insert(new_data).execute()
-                    st.success(f"🎉 {post['item']} 發布成功！剩餘 {post['others']} 份等待領取。")
-                    st.balloons()
-                    st.session_state.confirm_publish = False
+                    try:
+                        supabase.table("groups").insert(new_data).execute()
+                        st.success(f"🎉 {post['item']} ${post['price']} 求分 {post['others']} 份發布成功！")
+                        st.balloons()
+                        st.session_state.confirm_publish = False
+                        # 這裡不強迫 rerun，讓用戶看到成功訊息，或者你可以依需求加 st.rerun()
+                    except Exception as e:
+                        st.error(f"發布失敗: {e}")
