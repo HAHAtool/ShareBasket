@@ -1,3 +1,17 @@
+import streamlit as st
+from supabase import create_client, Client
+import os
+import math
+from dotenv import load_dotenv
+
+# 1. 初始化
+load_dotenv()
+url = st.secrets.get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
+key = st.secrets.get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(url, key)
+
+st.set_page_config(page_title="分食趣", page_icon="🛒", layout="centered")
+
 # --- 2. 處理 Google 登入邏輯 (強制修正版) ---
 def get_user():
     """獲取目前登入的使用者"""
@@ -54,8 +68,6 @@ with st.sidebar:
                 </a>
             ''', unsafe_allow_html=True)
 
-# --- 接下來是原本的主畫面 Tab1, Tab2 (維持不變) ---
-# ...
 
 # --- 主畫面標題 ---
 st.title("🛒 分食趣-現場媒合")
